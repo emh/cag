@@ -25,6 +25,13 @@ const status = signal("");
 const measureDistance = signal(null);
 const zoomValue = signal(1);
 const inkThickness = signal(2);
+const gridSettings = signal({
+  show: true,
+  pattern: "square",
+  style: "lines",
+  size: 40,
+  snap: false,
+});
 
 const view = {
   scale: 1,
@@ -74,6 +81,8 @@ const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 40;
 const MAX_FILL_PIXELS = 4_000_000;
 const MAX_FILL_DIM = 8192;
+const GRID_COLOR = "rgba(15, 23, 42, 0.08)";
+const GRID_DOT_COLOR = "rgba(15, 23, 42, 0.12)";
 
 const toolDefs = [
   { id: "straightedge", label: "Straightedge", key: "1" },
@@ -129,6 +138,11 @@ function Toolbar() {
       fillColor.value = next;
       scheduleRender();
     }
+  };
+
+  const updateGrid = (patch) => {
+    gridSettings.value = { ...gridSettings.value, ...patch };
+    scheduleRender();
   };
 
   const positionEditPicker = (event, input) => {
@@ -272,6 +286,80 @@ function Toolbar() {
         },
       }),
       h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
+    ),
+    h(
+      "div",
+      { class: "grid-controls" },
+      h(
+        "div",
+        { class: "grid-row" },
+        h("span", { class: "grid-label" }, "Grid"),
+        h(
+          "label",
+          { class: "grid-toggle" },
+          h("input", {
+            type: "checkbox",
+            checked: gridSettings.value.show,
+            onChange: (event) => updateGrid({ show: event.target.checked }),
+          }),
+          "Show"
+        ),
+        h(
+          "label",
+          { class: "grid-toggle" },
+          h("input", {
+            type: "checkbox",
+            checked: gridSettings.value.snap,
+            onChange: (event) => updateGrid({ snap: event.target.checked }),
+          }),
+          "Snap"
+        )
+      ),
+      h(
+        "div",
+        { class: "grid-row" },
+        h("span", { class: "grid-sub" }, "Pattern"),
+        h(
+          "select",
+          {
+            class: "grid-select",
+            value: gridSettings.value.pattern,
+            onChange: (event) => updateGrid({ pattern: event.target.value }),
+          },
+          h("option", { value: "square" }, "Square"),
+          h("option", { value: "hex" }, "Hex"),
+          h("option", { value: "triangle" }, "Triangle")
+        )
+      ),
+      h(
+        "div",
+        { class: "grid-row" },
+        h("span", { class: "grid-sub" }, "Style"),
+        h(
+          "select",
+          {
+            class: "grid-select",
+            value: gridSettings.value.style,
+            onChange: (event) => updateGrid({ style: event.target.value }),
+          },
+          h("option", { value: "lines" }, "Lines"),
+          h("option", { value: "dots" }, "Dots")
+        )
+      ),
+      h(
+        "div",
+        { class: "grid-row" },
+        h("span", { class: "grid-sub" }, "Size"),
+        h("input", {
+          type: "range",
+          min: 10,
+          max: 160,
+          step: 5,
+          value: gridSettings.value.size,
+          onInput: (event) => updateGrid({ size: Number(event.target.value) }),
+        }),
+        h("span", { class: "grid-value" }, `${gridSettings.value.size}px`)
+      )
     ),
     h(
       "div",
@@ -1110,6 +1198,194 @@ function drawSnapHighlight() {
   ctx.restore();
 }
 
+function drawGrid() {
+  const settings = gridSettings.value;
+  if (!settings.show) return;
+  const size = settings.size;
+  if (!Number.isFinite(size) || size <= 0) return;
+  const bounds = getWorldBounds();
+  ctx.save();
+  ctx.setLineDash([]);
+
+  if (settings.style === "lines") {
+    ctx.strokeStyle = GRID_COLOR;
+    setStrokeWidth(1);
+    if (settings.pattern === "square") {
+      drawSquareGridLines(bounds, size);
+    } else if (settings.pattern === "triangle") {
+      drawTriangleGridLines(bounds, size);
+    } else {
+      drawHexGridLines(bounds, size);
+    }
+  } else {
+    ctx.fillStyle = GRID_DOT_COLOR;
+    const radius = Math.max(0.6, 1 / view.scale);
+    if (settings.pattern === "square") {
+      drawSquareGridDots(bounds, size, radius);
+    } else if (settings.pattern === "hex") {
+      drawHexGridDots(bounds, size, radius);
+    } else {
+      drawTriangleGridDots(bounds, size, radius, { x: 0, y: 0 });
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawSquareGridLines(bounds, size) {
+  const minX = Math.floor(bounds.minX / size) * size - size;
+  const maxX = Math.ceil(bounds.maxX / size) * size + size;
+  const minY = Math.floor(bounds.minY / size) * size - size;
+  const maxY = Math.ceil(bounds.maxY / size) * size + size;
+
+  ctx.beginPath();
+  for (let x = minX; x <= maxX; x += size) {
+    ctx.moveTo(x, minY);
+    ctx.lineTo(x, maxY);
+  }
+  for (let y = minY; y <= maxY; y += size) {
+    ctx.moveTo(minX, y);
+    ctx.lineTo(maxX, y);
+  }
+  ctx.stroke();
+}
+
+function drawSquareGridDots(bounds, size, radius) {
+  const minX = Math.floor(bounds.minX / size) * size - size;
+  const maxX = Math.ceil(bounds.maxX / size) * size + size;
+  const minY = Math.floor(bounds.minY / size) * size - size;
+  const maxY = Math.ceil(bounds.maxY / size) * size + size;
+  const r = radius;
+  for (let x = minX; x <= maxX; x += size) {
+    for (let y = minY; y <= maxY; y += size) {
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+  }
+}
+
+function drawParallelLines(bounds, angle, spacing) {
+  if (spacing <= EPS) return;
+  const dir = { x: Math.cos(angle), y: Math.sin(angle) };
+  const normal = { x: -dir.y, y: dir.x };
+  const corners = [
+    { x: bounds.minX, y: bounds.minY },
+    { x: bounds.minX, y: bounds.maxY },
+    { x: bounds.maxX, y: bounds.minY },
+    { x: bounds.maxX, y: bounds.maxY },
+  ];
+  let minC = Infinity;
+  let maxC = -Infinity;
+  for (const corner of corners) {
+    const c = normal.x * corner.x + normal.y * corner.y;
+    minC = Math.min(minC, c);
+    maxC = Math.max(maxC, c);
+  }
+  const start = Math.floor(minC / spacing) * spacing - spacing;
+  const end = Math.ceil(maxC / spacing) * spacing + spacing;
+  ctx.beginPath();
+  for (let c = start; c <= end; c += spacing) {
+    const origin = { x: normal.x * c, y: normal.y * c };
+    const line = { p0: origin, p1: add(origin, dir) };
+    const clip = clipLineToBounds(line, bounds);
+    if (!clip) continue;
+    ctx.moveTo(clip.min.x, clip.min.y);
+    ctx.lineTo(clip.max.x, clip.max.y);
+  }
+  ctx.stroke();
+}
+
+function drawTriangleGridLines(bounds, size) {
+  const spacing = (size * Math.sqrt(3)) / 2;
+  drawParallelLines(bounds, 0, spacing);
+  drawParallelLines(bounds, Math.PI / 3, spacing);
+  drawParallelLines(bounds, -Math.PI / 3, spacing);
+}
+
+function forEachTriangularPoint(bounds, size, offset, callback) {
+  const origin = offset ?? { x: 0, y: 0 };
+  const h = (size * Math.sqrt(3)) / 2;
+  if (h <= EPS) return;
+  const minRow = Math.floor((bounds.minY - origin.y) / h) - 1;
+  const maxRow = Math.ceil((bounds.maxY - origin.y) / h) + 1;
+  const minCol = Math.floor((bounds.minX - origin.x) / size) - 1;
+  const maxCol = Math.ceil((bounds.maxX - origin.x) / size) + 1;
+  for (let row = minRow; row <= maxRow; row += 1) {
+    const y = row * h + origin.y;
+    const rowOffset = (Math.abs(row) % 2) * (size / 2);
+    for (let col = minCol; col <= maxCol; col += 1) {
+      const x = col * size + rowOffset + origin.x;
+      if (x < bounds.minX - size || x > bounds.maxX + size) continue;
+      callback(x, y);
+    }
+  }
+}
+
+function drawTriangleGridDots(bounds, size, radius, offset) {
+  const r = radius;
+  forEachTriangularPoint(bounds, size, offset, (x, y) => {
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  });
+}
+
+function drawHexGridLines(bounds, size) {
+  ctx.beginPath();
+  forEachHexCenter(bounds, size, (x, y, r) => {
+    drawHexOutlinePath(x, y, r);
+  });
+  ctx.stroke();
+}
+
+function drawHexGridDots(bounds, size, radius) {
+  const r = size;
+  const h = (Math.sqrt(3) * r) / 2;
+  const dot = radius;
+  forEachHexCenter(bounds, size, (cx, cy) => {
+    const vertices = [
+      { x: cx + r, y: cy },
+      { x: cx + r / 2, y: cy + h },
+      { x: cx - r / 2, y: cy + h },
+      { x: cx - r, y: cy },
+      { x: cx - r / 2, y: cy - h },
+      { x: cx + r / 2, y: cy - h },
+    ];
+    for (const v of vertices) {
+      ctx.fillRect(v.x - dot, v.y - dot, dot * 2, dot * 2);
+    }
+  });
+}
+
+function forEachHexCenter(bounds, size, callback) {
+  const r = size;
+  const dx = r * 1.5;
+  const dy = r * Math.sqrt(3);
+  const minCol = Math.floor((bounds.minX - r) / dx) - 1;
+  const maxCol = Math.ceil((bounds.maxX + r) / dx) + 1;
+  for (let col = minCol; col <= maxCol; col += 1) {
+    const x = col * dx;
+    const offset = (Math.abs(col) % 2) * (dy / 2);
+    const minRow = Math.floor((bounds.minY - r - offset) / dy) - 1;
+    const maxRow = Math.ceil((bounds.maxY + r - offset) / dy) + 1;
+    for (let row = minRow; row <= maxRow; row += 1) {
+      const y = row * dy + offset;
+      callback(x, y, r);
+    }
+  }
+}
+
+function drawHexOutlinePath(cx, cy, r) {
+  for (let i = 0; i < 6; i += 1) {
+    const angle = (Math.PI / 3) * i;
+    const x = cx + r * Math.cos(angle);
+    const y = cy + r * Math.sin(angle);
+    if (i === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.closePath();
+}
+
 function draw() {
   resizeCanvas();
   const dpr = window.devicePixelRatio || 1;
@@ -1118,6 +1394,8 @@ function draw() {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, view.panX * view.scale * dpr, view.panY * view.scale * dpr);
+
+  drawGrid();
 
   ctx.save();
   ctx.imageSmoothingEnabled = false;
@@ -1165,6 +1443,119 @@ function draw() {
   drawIntersections();
   drawPreview();
   drawSnapHighlight();
+}
+
+function getNearestTriGridPoint(point, size, offset = { x: 0, y: 0 }) {
+  const h = (size * Math.sqrt(3)) / 2;
+  if (h <= EPS) return null;
+  const shifted = { x: point.x - offset.x, y: point.y - offset.y };
+  const v = shifted.y / h;
+  const u = (shifted.x - (size / 2) * v) / size;
+  const uRound = Math.round(u);
+  const vRound = Math.round(v);
+  let best = null;
+  for (let du = -1; du <= 1; du += 1) {
+    for (let dv = -1; dv <= 1; dv += 1) {
+      const uu = uRound + du;
+      const vv = vRound + dv;
+      const x = size * uu + (size / 2) * vv + offset.x;
+      const y = h * vv + offset.y;
+      const d = dist(point, { x, y });
+      if (!best || d < best.distance) {
+        best = { point: { x, y }, distance: d };
+      }
+    }
+  }
+  return best;
+}
+
+function pixelToHex(point, size) {
+  const q = (2 / 3) * (point.x / size);
+  const r = ((-1 / 3) * point.x + (Math.sqrt(3) / 3) * point.y) / size;
+  return { q, r };
+}
+
+function axialToPixel(q, r, size) {
+  return {
+    x: size * (1.5 * q),
+    y: size * (Math.sqrt(3) / 2 * q + Math.sqrt(3) * r),
+  };
+}
+
+function hexRound(q, r) {
+  let x = q;
+  let z = r;
+  let y = -x - z;
+  let rx = Math.round(x);
+  let ry = Math.round(y);
+  let rz = Math.round(z);
+
+  const xDiff = Math.abs(rx - x);
+  const yDiff = Math.abs(ry - y);
+  const zDiff = Math.abs(rz - z);
+
+  if (xDiff > yDiff && xDiff > zDiff) {
+    rx = -ry - rz;
+  } else if (yDiff > zDiff) {
+    ry = -rx - rz;
+  } else {
+    rz = -rx - ry;
+  }
+
+  return { q: rx, r: rz };
+}
+
+function getNearestHexGridPoint(point, size) {
+  const axial = pixelToHex(point, size);
+  const rounded = hexRound(axial.q, axial.r);
+  const h = (Math.sqrt(3) * size) / 2;
+  const vertexOffsets = [
+    { x: size, y: 0 },
+    { x: size / 2, y: h },
+    { x: -size / 2, y: h },
+    { x: -size, y: 0 },
+    { x: -size / 2, y: -h },
+    { x: size / 2, y: -h },
+  ];
+  const neighbors = [
+    { q: 0, r: 0 },
+    { q: 1, r: 0 },
+    { q: 1, r: -1 },
+    { q: 0, r: -1 },
+    { q: -1, r: 0 },
+    { q: -1, r: 1 },
+    { q: 0, r: 1 },
+  ];
+
+  let best = null;
+  for (const dir of neighbors) {
+    const center = axialToPixel(rounded.q + dir.q, rounded.r + dir.r, size);
+    for (const offset of vertexOffsets) {
+      const x = center.x + offset.x;
+      const y = center.y + offset.y;
+      const d = dist(point, { x, y });
+      if (!best || d < best.distance) {
+        best = { point: { x, y }, distance: d };
+      }
+    }
+  }
+
+  return best;
+}
+
+function getGridSnapPoint(worldPoint) {
+  const settings = gridSettings.value;
+  const size = settings.size;
+  if (!Number.isFinite(size) || size <= 0) return null;
+  if (settings.pattern === "square") {
+    const x = Math.round(worldPoint.x / size) * size;
+    const y = Math.round(worldPoint.y / size) * size;
+    return { point: { x, y }, distance: dist(worldPoint, { x, y }) };
+  }
+  if (settings.pattern === "hex") {
+    return getNearestHexGridPoint(worldPoint, size);
+  }
+  return getNearestTriGridPoint(worldPoint, size, { x: 0, y: 0 });
 }
 
 function getSnapPoint(worldPoint) {
@@ -1224,6 +1615,15 @@ function getSnapPoint(worldPoint) {
       if (!best || d < best.distance) {
         best = { point: cp, distance: d, type: "measure", primId: prim.id };
       }
+    }
+  }
+
+  if (best) return best;
+
+  if (gridSettings.value.snap) {
+    const grid = getGridSnapPoint(worldPoint);
+    if (grid) {
+      return { point: grid.point, distance: grid.distance, type: "grid" };
     }
   }
 

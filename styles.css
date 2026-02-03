@@ -313,6 +313,65 @@ canvas {
   color: #213259;
 }
 
+.grid-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.grid-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.grid-label,
+.grid-sub {
+  font-size: 12px;
+  color: #4d5a7a;
+  min-width: 54px;
+}
+
+.grid-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #213259;
+  cursor: pointer;
+  user-select: none;
+}
+
+.grid-toggle input {
+  accent-color: #2b6bf3;
+}
+
+.grid-select {
+  flex: 1;
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #213259;
+  font-size: 12px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.grid-row input[type="range"] {
+  flex: 1;
+  accent-color: #2b6bf3;
+}
+
+.grid-value {
+  min-width: 46px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: #213259;
+}
+
 .action-controls {
   display: flex;
   align-items: center;
