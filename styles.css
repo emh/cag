@@ -313,6 +313,44 @@ canvas {
   color: #213259;
 }
 
+.action-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.action-btn {
+  flex: 1;
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #213259;
+  font-size: 12px;
+  padding: 6px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.action-btn:hover {
+  background: #e2e9ff;
+}
+
+.action-btn.danger {
+  background: #ffe9e9;
+  border-color: #ffb7b7;
+  color: #9c1c1c;
+}
+
+.action-key {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
 .hint {
   margin-top: 6px;
   font-size: 11px;

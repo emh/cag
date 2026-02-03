@@ -4,7 +4,7 @@ import { signal, effect } from "@preact/signals";
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-const tool = signal("compass");
+const tool = signal("straightedge");
 const palette = signal([
   "#e63946",
   "#f4a261",
@@ -76,13 +76,14 @@ const MAX_FILL_PIXELS = 4_000_000;
 const MAX_FILL_DIM = 8192;
 
 const toolDefs = [
-  { id: "compass", label: "Compass", key: "1" },
-  { id: "straightedge", label: "Straightedge", key: "2" },
-  { id: "ink", label: "Ink", key: "3" },
-  { id: "fill", label: "Fill", key: "4" },
-  { id: "copy", label: "Copy Measure", key: "5" },
-  { id: "paste", label: "Paste Measure", key: "6" },
-  { id: "erase", label: "Erase", key: "7" },
+  { id: "straightedge", label: "Straightedge", key: "1" },
+  { id: "segment", label: "Line Segment", key: "2" },
+  { id: "compass", label: "Circle", key: "3" },
+  { id: "ink", label: "Ink", key: "4" },
+  { id: "fill", label: "Fill", key: "5" },
+  { id: "copy", label: "Copy Measure", key: "6" },
+  { id: "paste", label: "Paste Measure", key: "7" },
+  { id: "erase", label: "Delete", key: "8" },
 ];
 
 function Toolbar() {
@@ -309,6 +310,46 @@ function Toolbar() {
         )
       )
     ),
+    h(
+      "div",
+      { class: "action-controls" },
+      h(
+        "button",
+        {
+          type: "button",
+          class: "action-btn",
+          onClick: () => undo(),
+        },
+        h("span", null, "Undo"),
+        h("span", { class: "action-key" }, "Z")
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "action-btn",
+          onClick: () => redo(),
+        },
+        h("span", null, "Redo"),
+        h("span", { class: "action-key" }, "Y")
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "action-btn danger",
+          onClick: () => {
+            commitHistory();
+            state.primitives = [];
+            state.ink = [];
+            state.fills = [];
+            recomputeIntersections();
+          },
+        },
+        h("span", null, "Clear"),
+        h("span", { class: "action-key" }, "X")
+      )
+    ),
     h("div", { class: "status" }, status.value),
     h(
       "div",
@@ -481,6 +522,14 @@ function closestPointOnLine(line, point) {
   return add(line.p0, mul(d, t));
 }
 
+function closestPointOnSegment(segment, point) {
+  const d = sub(segment.p1, segment.p0);
+  const denom = dot(d, d);
+  if (denom < EPS) return segment.p0;
+  const t = Math.max(0, Math.min(1, dot(sub(point, segment.p0), d) / denom));
+  return add(segment.p0, mul(d, t));
+}
+
 function closestPointOnCircle(circle, point) {
   const r = dist(circle.c, circle.rp);
   const angle = Math.atan2(point.y - circle.c.y, point.x - circle.c.x);
@@ -527,6 +576,18 @@ function angleDistance(a, b) {
 
 function isCirclePrimitive(prim) {
   return prim.type === "circle" || prim.type === "measure";
+}
+
+function isLineLike(prim) {
+  return prim.type === "line" || prim.type === "segment";
+}
+
+function isSegment(prim) {
+  return prim.type === "segment";
+}
+
+function paramOnSegment(param) {
+  return param >= -EPS && param <= 1 + EPS;
 }
 
 function circleData(prim) {
@@ -657,24 +718,30 @@ function computeCircleCircleIntersections(a, b) {
 }
 
 function computeIntersectionsForPair(a, b) {
-  if (a.type === "line" && b.type === "line") {
-    return computeLineLineIntersections(a, b);
+  if (isLineLike(a) && isLineLike(b)) {
+    return computeLineLineIntersections(a, b).filter((hit) => {
+      if (isSegment(a) && !paramOnSegment(hit.paramA)) return false;
+      if (isSegment(b) && !paramOnSegment(hit.paramB)) return false;
+      return true;
+    });
   }
-  if (a.type === "line" && isCirclePrimitive(b)) {
+  if (isLineLike(a) && isCirclePrimitive(b)) {
     const data = circleData(b);
     const hits = computeLineCircleIntersections(a, data);
     return hits
       .filter((hit) => {
+        if (isSegment(a) && !paramOnSegment(hit.paramLine)) return false;
         if (b.type !== "measure") return true;
         return angleInArc(hit.paramCircle, b.startAngle, b.endAngle);
       })
       .map((hit) => ({ point: hit.point, paramA: hit.paramLine, paramB: hit.paramCircle }));
   }
-  if (b.type === "line" && isCirclePrimitive(a)) {
+  if (isLineLike(b) && isCirclePrimitive(a)) {
     const data = circleData(a);
     const hits = computeLineCircleIntersections(b, data);
     return hits
       .filter((hit) => {
+        if (isSegment(b) && !paramOnSegment(hit.paramLine)) return false;
         if (a.type !== "measure") return true;
         return angleInArc(hit.paramCircle, a.startAngle, a.endAngle);
       })
@@ -841,6 +908,22 @@ function drawLine(line, strokeStyle, lineWidthPx, dashed = false) {
   ctx.restore();
 }
 
+function drawSegment(segment, strokeStyle, lineWidthPx, dashed = false) {
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  setStrokeWidth(lineWidthPx);
+  if (dashed) {
+    ctx.setLineDash([6 / view.scale, 6 / view.scale]);
+  } else {
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  ctx.moveTo(segment.p0.x, segment.p0.y);
+  ctx.lineTo(segment.p1.x, segment.p1.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawCircle(circle, strokeStyle, lineWidthPx, dashed = false) {
   const radius = dist(circle.c, circle.rp);
   ctx.save();
@@ -874,13 +957,18 @@ function drawMeasure(arc, strokeStyle, lineWidthPx, dashed = true) {
 }
 
 function resolveLineEndpoint(endpoint, line, bounds) {
-  const clip = clipLineToBounds(line, bounds);
-  if (!clip) return null;
   if (endpoint.type === "intersection") {
     const inter = intersections.byId.get(endpoint.id);
     return inter?.point ?? null;
   }
+  if (endpoint.type === "endpoint") {
+    if (line.type !== "segment") return null;
+    return endpoint.which === "start" ? line.p0 : line.p1;
+  }
   if (endpoint.type === "clip") {
+    if (line.type !== "line") return null;
+    const clip = clipLineToBounds(line, bounds);
+    if (!clip) return null;
     return endpoint.which === "min" ? clip.min : clip.max;
   }
   return null;
@@ -966,6 +1054,16 @@ function drawPreview() {
     ctx.fill();
   }
 
+  if (tool.value === "segment" && pending.anchor) {
+    drawSegment({ p0: pending.anchor, p1: snapped }, "#2b6bf3", 1.5, true);
+    ctx.beginPath();
+    ctx.arc(pending.anchor.x, pending.anchor.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(snapped.x, snapped.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   if (tool.value === "copy" && pending.p0) {
     ctx.setLineDash([6 / view.scale, 6 / view.scale]);
     ctx.beginPath();
@@ -1036,6 +1134,18 @@ function draw() {
     if (prim.type === "line") {
       drawLine(prim, "#8fbef8", 1.2);
     }
+    if (prim.type === "segment") {
+      drawSegment(prim, "#8fbef8", 1.2);
+      ctx.save();
+      ctx.fillStyle = "#8fbef8";
+      ctx.beginPath();
+      ctx.arc(prim.p0.x, prim.p0.y, 2.5 / view.scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(prim.p1.x, prim.p1.y, 2.5 / view.scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     if (prim.type === "circle") {
       drawCircle(prim, "#8fbef8", 1.2);
       ctx.save();
@@ -1083,8 +1193,8 @@ function getSnapPoint(worldPoint) {
   if (best) return best;
 
   for (const prim of state.primitives) {
-    if (prim.type !== "line") continue;
-    const cp = closestPointOnLine(prim, worldPoint);
+    if (!isLineLike(prim)) continue;
+    const cp = prim.type === "segment" ? closestPointOnSegment(prim, worldPoint) : closestPointOnLine(prim, worldPoint);
     const d = dist(cp, worldPoint);
     if (d <= snapRadius) {
       if (!best || d < best.distance) {
@@ -1131,6 +1241,12 @@ function hitTestPrimitive(worldPoint) {
         if (!best || d < best.distance) best = { prim, distance: d };
       }
     }
+    if (prim.type === "segment") {
+      const d = distancePointToSegment(worldPoint, prim.p0, prim.p1);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
     if (prim.type === "circle") {
       const radius = dist(prim.c, prim.rp);
       const d = Math.abs(dist(prim.c, worldPoint) - radius);
@@ -1147,6 +1263,44 @@ function hitTestPrimitive(worldPoint) {
     }
   }
   return best?.prim || null;
+}
+
+function hitTestCircleOrSegment(worldPoint) {
+  const hitRadius = HIT_PX / view.scale;
+  let best = null;
+  for (const prim of state.primitives) {
+    if (prim.type === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      const d = Math.abs(dist(prim.c, worldPoint) - radius);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
+    if (prim.type === "segment") {
+      const d = distancePointToSegment(worldPoint, prim.p0, prim.p1);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
+  }
+  return best?.prim || null;
+}
+
+function isNearSpecialPoint(worldPoint) {
+  const radius = SNAP_PX / view.scale;
+  for (const inter of intersections.list) {
+    if (dist(inter.point, worldPoint) <= radius) return true;
+  }
+  for (const prim of state.primitives) {
+    if (prim.type === "circle") {
+      if (dist(prim.c, worldPoint) <= radius) return true;
+    }
+    if (prim.type === "segment") {
+      if (dist(prim.p0, worldPoint) <= radius) return true;
+      if (dist(prim.p1, worldPoint) <= radius) return true;
+    }
+  }
+  return false;
 }
 
 function hitTestInk(worldPoint) {
@@ -1223,8 +1377,18 @@ function addPrimitive(prim) {
 
 function inkSegmentKey(seg) {
   if (seg.kind === "line") {
-    const aKey = seg.a?.type === "intersection" ? `i:${seg.a.id}` : `c:${seg.a?.which}`;
-    const bKey = seg.b?.type === "intersection" ? `i:${seg.b.id}` : `c:${seg.b?.which}`;
+    const aKey =
+      seg.a?.type === "intersection"
+        ? `i:${seg.a.id}`
+        : seg.a?.type === "endpoint"
+          ? `e:${seg.a.which}`
+          : `c:${seg.a?.which}`;
+    const bKey =
+      seg.b?.type === "intersection"
+        ? `i:${seg.b.id}`
+        : seg.b?.type === "endpoint"
+          ? `e:${seg.b.which}`
+          : `c:${seg.b?.which}`;
     const ordered = [aKey, bKey].sort();
     return `line:${seg.primId}:${ordered[0]}:${ordered[1]}`;
   }
@@ -1372,26 +1536,34 @@ function inkLineSegment(line, worldPoint) {
     if (inter.param > tClick && !after) after = inter;
   });
 
-  const bounds = getWorldBounds();
-  const clip = clipLineToBounds(line, bounds);
-  if (!clip) return;
-
   let a;
   let b;
+  let startRef;
+  let endRef;
+  if (line.type === "segment") {
+    startRef = { type: "endpoint", which: "start" };
+    endRef = { type: "endpoint", which: "end" };
+  } else {
+    const bounds = getWorldBounds();
+    const clip = clipLineToBounds(line, bounds);
+    if (!clip) return;
+    startRef = { type: "clip", which: "min" };
+    endRef = { type: "clip", which: "max" };
+  }
 
   if (!before && !after) {
-    a = { type: "clip", which: "min" };
-    b = { type: "clip", which: "max" };
+    a = startRef;
+    b = endRef;
   } else {
     if (before) {
       a = { type: "intersection", id: before.id };
     } else {
-      a = { type: "clip", which: "min" };
+      a = startRef;
     }
     if (after) {
       b = { type: "intersection", id: after.id };
     } else {
-      b = { type: "clip", which: "max" };
+      b = endRef;
     }
   }
 
@@ -1458,6 +1630,12 @@ function pruneInkSegments() {
         if (endpoint.type === "intersection") {
           const inter = intersections.byId.get(endpoint.id);
           if (!inter) valid = false;
+        }
+        if (endpoint.type === "endpoint" && prim.type !== "segment") {
+          valid = false;
+        }
+        if (endpoint.type === "clip" && prim.type !== "line") {
+          valid = false;
         }
       }
       if (!valid) {
@@ -1716,7 +1894,7 @@ function handlePointerMove(event) {
     return;
   }
 
-  if (["compass", "straightedge", "copy", "paste"].includes(tool.value)) {
+  if (["compass", "straightedge", "segment", "copy", "paste"].includes(tool.value)) {
     const snap = getSnapPoint(pointerWorld);
     hoverSnap = snap;
   } else {
@@ -1806,11 +1984,32 @@ function handlePointerDown(event) {
     }
   }
 
+  if (tool.value === "segment") {
+    if (!toolState.anchor) {
+      toolState.anchor = target;
+    } else {
+      if (dist(toolState.anchor, target) < 1) {
+        setStatus("Line segment needs two distinct points.");
+        toolState = { step: 0 };
+        return;
+      }
+      commitHistory();
+      const segment = {
+        id: state.nextPrimId++,
+        type: "segment",
+        p0: toolState.anchor,
+        p1: target,
+      };
+      addPrimitive(segment);
+      toolState = { step: 0 };
+    }
+  }
+
   if (tool.value === "ink") {
     const hit = hitTestPrimitive(pointerWorld);
     if (!hit) return;
     commitHistory();
-    if (hit.type === "line") {
+    if (hit.type === "line" || hit.type === "segment") {
       inkLineSegment(hit, pointerWorld);
     }
     if (hit.type === "circle") {
@@ -1823,6 +2022,21 @@ function handlePointerDown(event) {
   }
 
   if (tool.value === "copy") {
+    const hit = isNearSpecialPoint(pointerWorld) ? null : hitTestCircleOrSegment(pointerWorld);
+    if (hit?.type === "circle") {
+      commitHistory();
+      measureDistance.value = dist(hit.c, hit.rp);
+      toolState = { step: 0 };
+      setStatus("Circle radius copied.");
+      return;
+    }
+    if (hit?.type === "segment") {
+      commitHistory();
+      measureDistance.value = dist(hit.p0, hit.p1);
+      toolState = { step: 0 };
+      setStatus("Segment length copied.");
+      return;
+    }
     if (!toolState.p0) {
       toolState.p0 = target;
     } else {
@@ -1897,7 +2111,7 @@ function handleKeyDown(event) {
     scheduleRender();
     return;
   }
-  if (key >= "1" && key <= "7") {
+  if (key >= "1" && key <= "9") {
     const def = toolDefs[Number(key) - 1];
     if (def) setTool(def.id);
   }
