@@ -25,6 +25,8 @@ const status = signal("");
 const measureDistance = signal(null);
 const zoomValue = signal(1);
 const inkThickness = signal(2);
+const stampShape = signal("square");
+const stampSize = signal(60);
 const gridSettings = signal({
   show: true,
   pattern: "square",
@@ -90,13 +92,20 @@ const toolDefs = [
   { id: "compass", label: "Circle", key: "3" },
   { id: "ink", label: "Ink", key: "4" },
   { id: "fill", label: "Fill", key: "5" },
-  { id: "copy", label: "Copy Measure", key: "6" },
-  { id: "paste", label: "Paste Measure", key: "7" },
-  { id: "erase", label: "Delete", key: "8" },
+  { id: "stamp", label: "Stamp", key: "6" },
+  { id: "copy", label: "Copy Measure", key: "7" },
+  { id: "paste", label: "Paste Measure", key: "8" },
+  { id: "erase", label: "Delete", key: "9" },
 ];
 
 function Toolbar() {
   const paletteEditInputId = "palette-edit-picker";
+  const stampOptions = [
+    { id: "square", label: "Square" },
+    { id: "circle", label: "Circle" },
+    { id: "hex", label: "Hexagon" },
+    { id: "triangle", label: "Triangle" },
+  ];
 
   const setFillColor = (color) => {
     fillColor.value = color;
@@ -142,6 +151,11 @@ function Toolbar() {
 
   const updateGrid = (patch) => {
     gridSettings.value = { ...gridSettings.value, ...patch };
+    scheduleRender();
+  };
+
+  const setStamp = (shape) => {
+    stampShape.value = shape;
     scheduleRender();
   };
 
@@ -252,6 +266,43 @@ function Toolbar() {
             resetEditPicker(event.target);
           },
         })
+      )
+    ),
+    h(
+      "div",
+      { class: "stamp-controls" },
+      h("span", { class: "stamp-label" }, "Stamp"),
+      h(
+        "div",
+        { class: "stamp-grid" },
+        stampOptions.map((option) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `stamp-btn ${stampShape.value === option.id ? "active" : ""}`,
+              onClick: () => setStamp(option.id),
+            },
+            option.label
+          )
+        )
+      ),
+      h(
+        "div",
+        { class: "stamp-size" },
+        h("span", { class: "stamp-size-label" }, "Size"),
+        h("input", {
+          type: "range",
+          min: 10,
+          max: 200,
+          step: 5,
+          value: stampSize.value,
+          onInput: (event) => {
+            stampSize.value = Number(event.target.value);
+            scheduleRender();
+          },
+        }),
+        h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
       )
     ),
     h(
@@ -576,6 +627,34 @@ function len(a) {
 
 function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function regularPolygonVertices(center, sides, radius, rotation = 0) {
+  const verts = [];
+  const step = (Math.PI * 2) / sides;
+  for (let i = 0; i < sides; i += 1) {
+    const angle = rotation + step * i;
+    verts.push({
+      x: center.x + radius * Math.cos(angle),
+      y: center.y + radius * Math.sin(angle),
+    });
+  }
+  return verts;
+}
+
+function getStampVertices(center, shape, size) {
+  if (shape === "square") {
+    const radius = size / Math.SQRT2;
+    return regularPolygonVertices(center, 4, radius, Math.PI / 4);
+  }
+  if (shape === "triangle") {
+    const radius = size / Math.sqrt(3);
+    return regularPolygonVertices(center, 3, radius, -Math.PI / 2);
+  }
+  if (shape === "hex") {
+    return regularPolygonVertices(center, 6, size, 0);
+  }
+  return null;
 }
 
 function normalizeAngle(angle) {
@@ -1120,6 +1199,26 @@ function drawIntersections() {
   ctx.restore();
 }
 
+function drawPolygon(vertices, strokeStyle, lineWidthPx, dashed = false) {
+  if (!vertices || vertices.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  setStrokeWidth(lineWidthPx);
+  if (dashed) {
+    ctx.setLineDash([6 / view.scale, 6 / view.scale]);
+  } else {
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  ctx.moveTo(vertices[0].x, vertices[0].y);
+  for (let i = 1; i < vertices.length; i += 1) {
+    ctx.lineTo(vertices[i].x, vertices[i].y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawPreview() {
   ctx.save();
   ctx.strokeStyle = "#2b6bf3";
@@ -1150,6 +1249,22 @@ function drawPreview() {
     ctx.beginPath();
     ctx.arc(snapped.x, snapped.y, pointRadius, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  if (tool.value === "stamp") {
+    const size = stampSize.value;
+    if (stampShape.value === "circle") {
+      drawCircle({ c: snapped, rp: { x: snapped.x + size, y: snapped.y } }, "#8fbef8", 1.5, true);
+      ctx.save();
+      ctx.fillStyle = "#8fbef8";
+      ctx.beginPath();
+      ctx.arc(snapped.x, snapped.y, pointRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else {
+      const verts = getStampVertices(snapped, stampShape.value, size);
+      drawPolygon(verts, "#8fbef8", 1.5, true);
+    }
   }
 
   if (tool.value === "copy" && pending.p0) {
@@ -1775,6 +1890,38 @@ function addPrimitive(prim) {
   recomputeIntersections();
 }
 
+function addStampAt(center) {
+  const size = stampSize.value;
+  if (!Number.isFinite(size) || size <= 0) return;
+  const shape = stampShape.value;
+  if (shape === "circle") {
+    const circle = {
+      id: state.nextPrimId++,
+      type: "circle",
+      c: center,
+      rp: { x: center.x + size, y: center.y },
+    };
+    state.primitives = [...state.primitives, circle];
+    recomputeIntersections();
+    return;
+  }
+  const verts = getStampVertices(center, shape, size);
+  if (!verts || verts.length < 2) return;
+  const newPrims = [];
+  for (let i = 0; i < verts.length; i += 1) {
+    const p0 = verts[i];
+    const p1 = verts[(i + 1) % verts.length];
+    newPrims.push({
+      id: state.nextPrimId++,
+      type: "segment",
+      p0,
+      p1,
+    });
+  }
+  state.primitives = [...state.primitives, ...newPrims];
+  recomputeIntersections();
+}
+
 function inkSegmentKey(seg) {
   if (seg.kind === "line") {
     const aKey =
@@ -2294,7 +2441,7 @@ function handlePointerMove(event) {
     return;
   }
 
-  if (["compass", "straightedge", "segment", "copy", "paste"].includes(tool.value)) {
+  if (["compass", "straightedge", "segment", "stamp", "copy", "paste"].includes(tool.value)) {
     const snap = getSnapPoint(pointerWorld);
     hoverSnap = snap;
   } else {
@@ -2403,6 +2550,14 @@ function handlePointerDown(event) {
       addPrimitive(segment);
       toolState = { step: 0 };
     }
+  }
+
+  if (tool.value === "stamp") {
+    const size = stampSize.value;
+    if (!Number.isFinite(size) || size <= 0) return;
+    commitHistory();
+    addStampAt(target);
+    toolState = { step: 0 };
   }
 
   if (tool.value === "ink") {

@@ -204,6 +204,72 @@ canvas {
   color: #4d5a7a;
 }
 
+.stamp-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.stamp-label {
+  font-size: 12px;
+  color: #4d5a7a;
+}
+
+.stamp-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  width: 100%;
+}
+
+.stamp-btn {
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #f4f7ff;
+  color: #213259;
+  font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.stamp-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 12px rgba(44, 76, 140, 0.18);
+}
+
+.stamp-btn.active {
+  background: #2b6bf3;
+  border-color: #2b6bf3;
+  color: #ffffff;
+}
+
+.stamp-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stamp-size-label {
+  font-size: 11px;
+  color: #4d5a7a;
+  min-width: 32px;
+}
+
+.stamp-size input[type="range"] {
+  flex: 1;
+  accent-color: #2b6bf3;
+}
+
+.stamp-size-value {
+  min-width: 50px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: #213259;
+}
+
 .controls input[type="color"] {
   border: none;
   width: 32px;
