@@ -90,12 +90,13 @@ const toolDefs = [
   { id: "straightedge", label: "Straightedge", key: "1" },
   { id: "segment", label: "Line Segment", key: "2" },
   { id: "compass", label: "Circle", key: "3" },
-  { id: "ink", label: "Ink", key: "4" },
-  { id: "fill", label: "Fill", key: "5" },
-  { id: "stamp", label: "Stamp", key: "6" },
-  { id: "copy", label: "Copy Measure", key: "7" },
-  { id: "paste", label: "Paste Measure", key: "8" },
-  { id: "erase", label: "Delete", key: "9" },
+  { id: "arc", label: "Arc", key: "4" },
+  { id: "ink", label: "Ink", key: "5" },
+  { id: "fill", label: "Fill", key: "6" },
+  { id: "stamp", label: "Stamp", key: "7" },
+  { id: "copy", label: "Copy Measure", key: "8" },
+  { id: "paste", label: "Paste Measure", key: "9" },
+  { id: "erase", label: "Delete", key: "D" },
 ];
 
 function Toolbar() {
@@ -741,8 +742,48 @@ function angleDistance(a, b) {
   return Math.min(diff, Math.PI * 2 - diff);
 }
 
+function arcEndpoints(arc) {
+  const r = dist(arc.c, arc.rp);
+  return {
+    start: {
+      x: arc.c.x + Math.cos(arc.startAngle) * r,
+      y: arc.c.y + Math.sin(arc.startAngle) * r,
+    },
+    end: {
+      x: arc.c.x + Math.cos(arc.endAngle) * r,
+      y: arc.c.y + Math.sin(arc.endAngle) * r,
+    },
+    radius: r,
+  };
+}
+
+function projectToRadius(center, point, radius) {
+  const angle = Math.atan2(point.y - center.y, point.x - center.x);
+  return {
+    point: {
+      x: center.x + Math.cos(angle) * radius,
+      y: center.y + Math.sin(angle) * radius,
+    },
+    angle: normalizeAngle(angle),
+  };
+}
+
+function computeArcAngles(center, startPoint, endPoint, radius) {
+  const start = projectToRadius(center, startPoint, radius);
+  const end = projectToRadius(center, endPoint, radius);
+  let startAngle = start.angle;
+  let endAngle = end.angle;
+  const delta = normalizeAngle(endAngle - startAngle);
+  if (delta > Math.PI) {
+    const temp = startAngle;
+    startAngle = endAngle;
+    endAngle = temp;
+  }
+  return { startAngle, endAngle, startPoint: start.point, endPoint: end.point };
+}
+
 function isCirclePrimitive(prim) {
-  return prim.type === "circle" || prim.type === "measure";
+  return prim.type === "circle" || prim.type === "measure" || prim.type === "arc";
 }
 
 function isLineLike(prim) {
@@ -898,7 +939,7 @@ function computeIntersectionsForPair(a, b) {
     return hits
       .filter((hit) => {
         if (isSegment(a) && !paramOnSegment(hit.paramLine)) return false;
-        if (b.type !== "measure") return true;
+        if (b.type !== "measure" && b.type !== "arc") return true;
         return angleInArc(hit.paramCircle, b.startAngle, b.endAngle);
       })
       .map((hit) => ({ point: hit.point, paramA: hit.paramLine, paramB: hit.paramCircle }));
@@ -909,7 +950,7 @@ function computeIntersectionsForPair(a, b) {
     return hits
       .filter((hit) => {
         if (isSegment(b) && !paramOnSegment(hit.paramLine)) return false;
-        if (a.type !== "measure") return true;
+        if (a.type !== "measure" && a.type !== "arc") return true;
         return angleInArc(hit.paramCircle, a.startAngle, a.endAngle);
       })
       .map((hit) => ({ point: hit.point, paramA: hit.paramCircle, paramB: hit.paramLine }));
@@ -920,10 +961,10 @@ function computeIntersectionsForPair(a, b) {
     const hits = computeCircleCircleIntersections(dataA, dataB);
     return hits
       .filter((hit) => {
-        if (a.type === "measure" && !angleInArc(hit.paramA, a.startAngle, a.endAngle)) {
+        if ((a.type === "measure" || a.type === "arc") && !angleInArc(hit.paramA, a.startAngle, a.endAngle)) {
           return false;
         }
-        if (b.type === "measure" && !angleInArc(hit.paramB, b.startAngle, b.endAngle)) {
+        if ((b.type === "measure" || b.type === "arc") && !angleInArc(hit.paramB, b.startAngle, b.endAngle)) {
           return false;
         }
         return true;
@@ -1123,6 +1164,22 @@ function drawMeasure(arc, strokeStyle, lineWidthPx, dashed = true) {
   ctx.restore();
 }
 
+function drawArcPrimitive(arc, strokeStyle, lineWidthPx, dashed = false) {
+  const radius = dist(arc.c, arc.rp);
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  setStrokeWidth(lineWidthPx);
+  if (dashed) {
+    ctx.setLineDash([6 / view.scale, 6 / view.scale]);
+  } else {
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  ctx.arc(arc.c.x, arc.c.y, radius, arc.startAngle, arc.endAngle, false);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function resolveLineEndpoint(endpoint, line, bounds) {
   if (endpoint.type === "intersection") {
     const inter = intersections.byId.get(endpoint.id);
@@ -1249,6 +1306,33 @@ function drawPreview() {
     ctx.beginPath();
     ctx.arc(snapped.x, snapped.y, pointRadius, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  if (tool.value === "arc" && pending.center) {
+    ctx.beginPath();
+    ctx.arc(pending.center.x, pending.center.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+    if (pending.start) {
+      const radius = pending.radius ?? dist(pending.center, pending.start);
+      const angles = computeArcAngles(pending.center, pending.start, snapped, radius);
+      drawArcPrimitive(
+        {
+          c: pending.center,
+          rp: angles.startPoint,
+          startAngle: angles.startAngle,
+          endAngle: angles.endAngle,
+        },
+        "#8fbef8",
+        1.5,
+        true
+      );
+      ctx.beginPath();
+      ctx.arc(angles.startPoint.x, angles.startPoint.y, pointRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(angles.endPoint.x, angles.endPoint.y, pointRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   if (tool.value === "stamp") {
@@ -1548,6 +1632,22 @@ function draw() {
       ctx.fill();
       ctx.restore();
     }
+    if (prim.type === "arc") {
+      drawArcPrimitive(prim, "#8fbef8", 1.2, false);
+      const endpoints = arcEndpoints(prim);
+      ctx.save();
+      ctx.fillStyle = "#8fbef8";
+      ctx.beginPath();
+      ctx.arc(prim.c.x, prim.c.y, 2.5 / view.scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(endpoints.start.x, endpoints.start.y, 2.5 / view.scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(endpoints.end.x, endpoints.end.y, 2.5 / view.scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     if (prim.type === "measure") {
       drawMeasure(prim, "#8fbef8", 1.2, true);
     }
@@ -1688,7 +1788,7 @@ function getSnapPoint(worldPoint) {
   if (best) return best;
 
   for (const prim of state.primitives) {
-    if (prim.type !== "circle") continue;
+    if (prim.type !== "circle" && prim.type !== "arc") continue;
     const d = dist(prim.c, worldPoint);
     if (d <= snapRadius) {
       if (!best || d < best.distance) {
@@ -1711,24 +1811,22 @@ function getSnapPoint(worldPoint) {
   if (best) return best;
 
   for (const prim of state.primitives) {
-    if (prim.type !== "circle") continue;
-    const cp = closestPointOnCircle(prim, worldPoint);
-    const d = dist(cp, worldPoint);
-    if (d <= snapRadius) {
-      if (!best || d < best.distance) {
-        best = { point: cp, distance: d, type: "circle", primId: prim.id };
+    if (prim.type === "circle") {
+      const cp = closestPointOnCircle(prim, worldPoint);
+      const d = dist(cp, worldPoint);
+      if (d <= snapRadius) {
+        if (!best || d < best.distance) {
+          best = { point: cp, distance: d, type: "circle", primId: prim.id };
+        }
       }
     }
-  }
-  if (best) return best;
-
-  for (const prim of state.primitives) {
-    if (prim.type !== "measure") continue;
-    const cp = closestPointOnArc(prim, worldPoint);
-    const d = dist(cp, worldPoint);
-    if (d <= snapRadius) {
-      if (!best || d < best.distance) {
-        best = { point: cp, distance: d, type: "measure", primId: prim.id };
+    if (prim.type === "arc" || prim.type === "measure") {
+      const cp = closestPointOnArc(prim, worldPoint);
+      const d = dist(cp, worldPoint);
+      if (d <= snapRadius) {
+        if (!best || d < best.distance) {
+          best = { point: cp, distance: d, type: "arc", primId: prim.id };
+        }
       }
     }
   }
@@ -1769,7 +1867,7 @@ function hitTestPrimitive(worldPoint) {
         if (!best || d < best.distance) best = { prim, distance: d };
       }
     }
-    if (prim.type === "measure") {
+    if (prim.type === "arc" || prim.type === "measure") {
       const cp = closestPointOnArc(prim, worldPoint);
       const d = dist(cp, worldPoint);
       if (d <= hitRadius) {
@@ -2441,7 +2539,7 @@ function handlePointerMove(event) {
     return;
   }
 
-  if (["compass", "straightedge", "segment", "stamp", "copy", "paste"].includes(tool.value)) {
+  if (["compass", "straightedge", "segment", "arc", "stamp", "copy", "paste"].includes(tool.value)) {
     const snap = getSnapPoint(pointerWorld);
     hoverSnap = snap;
   } else {
@@ -2552,6 +2650,40 @@ function handlePointerDown(event) {
     }
   }
 
+  if (tool.value === "arc") {
+    if (!toolState.center) {
+      toolState.center = target;
+    } else if (!toolState.start) {
+      const radius = dist(toolState.center, target);
+      if (radius < 1) {
+        setStatus("Arc radius too small.");
+        toolState = { step: 0 };
+        return;
+      }
+      toolState.start = target;
+      toolState.radius = radius;
+    } else {
+      const radius = toolState.radius ?? dist(toolState.center, toolState.start);
+      if (radius < 1) {
+        setStatus("Arc radius too small.");
+        toolState = { step: 0 };
+        return;
+      }
+      const angles = computeArcAngles(toolState.center, toolState.start, target, radius);
+      commitHistory();
+      const arc = {
+        id: state.nextPrimId++,
+        type: "arc",
+        c: toolState.center,
+        rp: angles.startPoint,
+        startAngle: angles.startAngle,
+        endAngle: angles.endAngle,
+      };
+      addPrimitive(arc);
+      toolState = { step: 0 };
+    }
+  }
+
   if (tool.value === "stamp") {
     const size = stampSize.value;
     if (!Number.isFinite(size) || size <= 0) return;
@@ -2605,7 +2737,7 @@ function handlePointerDown(event) {
 
   if (tool.value === "paste") {
     if (!measureDistance.value) {
-      setStatus("Copy a measure first (tool 5).");
+      setStatus("Copy a measure first (tool 8).");
       return;
     }
     if (!toolState.center) {
@@ -2666,9 +2798,10 @@ function handleKeyDown(event) {
     scheduleRender();
     return;
   }
-  if (key >= "1" && key <= "9") {
-    const def = toolDefs[Number(key) - 1];
-    if (def) setTool(def.id);
+  const toolKey = toolDefs.find((def) => def.key.toLowerCase() === key);
+  if (toolKey) {
+    setTool(toolKey.id);
+    return;
   }
   if (key === "z") {
     undo();
