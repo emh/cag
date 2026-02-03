@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Computer Aided Geometric Construction</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "preact": "https://cdn.jsdelivr.net/npm/preact@10.19.2/dist/preact.module.js",
+          "preact/hooks": "https://cdn.jsdelivr.net/npm/preact@10.19.2/hooks/dist/hooks.module.js",
+          "@preact/signals": "https://cdn.jsdelivr.net/npm/@preact/signals@latest/dist/signals.module.js",
+          "@preact/signals-core": "https://cdn.jsdelivr.net/npm/@preact/signals-core@latest/dist/signals-core.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="canvas"></canvas>
+      <div id="ui"></div>
+    </div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

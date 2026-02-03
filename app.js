@@ -1,0 +1,1959 @@
+import { h, render } from "preact";
+import { signal, effect } from "@preact/signals";
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const tool = signal("compass");
+const palette = signal([
+  "#e63946",
+  "#f4a261",
+  "#f6c945",
+  "#2a9d8f",
+  "#3b82f6",
+  "#8b5cf6",
+  "#ffffff",
+  "#e5e7eb",
+  "#cbd5e1",
+  "#94a3b8",
+  "#475569",
+  "#000000",
+]);
+const fillColor = signal(palette.value[0]);
+const fillAlpha = signal(0.65);
+const status = signal("");
+const measureDistance = signal(null);
+const zoomValue = signal(1);
+const inkThickness = signal(2);
+
+const view = {
+  scale: 1,
+  panX: 0,
+  panY: 0,
+};
+
+const state = {
+  primitives: [],
+  ink: [],
+  fills: [],
+  nextPrimId: 1,
+  nextInkId: 1,
+  nextFillId: 1,
+};
+
+let intersections = {
+  list: [],
+  byPrim: new Map(),
+  byId: new Map(),
+};
+
+let toolState = {
+  step: 0,
+};
+
+let hoverSnap = null;
+let pointerWorld = { x: 0, y: 0 };
+let spaceDown = false;
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+let pointerStart = { x: 0, y: 0 };
+let rerasterizeTimer = null;
+let panDirty = false;
+let paletteEditIndex = null;
+
+const history = {
+  past: [],
+  future: [],
+};
+
+const SNAP_PX = 10;
+const HIT_PX = 8;
+const ARC_SPAN = Math.PI / 7;
+const EPS = 1e-6;
+const MIN_ZOOM = 0.05;
+const MAX_ZOOM = 40;
+const MAX_FILL_PIXELS = 4_000_000;
+const MAX_FILL_DIM = 8192;
+
+const toolDefs = [
+  { id: "compass", label: "Compass", key: "1" },
+  { id: "straightedge", label: "Straightedge", key: "2" },
+  { id: "ink", label: "Ink", key: "3" },
+  { id: "fill", label: "Fill", key: "4" },
+  { id: "copy", label: "Copy Measure", key: "5" },
+  { id: "paste", label: "Paste Measure", key: "6" },
+  { id: "erase", label: "Erase", key: "7" },
+];
+
+function Toolbar() {
+  const paletteEditInputId = "palette-edit-picker";
+
+  const setFillColor = (color) => {
+    fillColor.value = color;
+    scheduleRender();
+  };
+
+  const addPaletteColor = (color) => {
+    if (!color) return;
+    const normalized = color.toLowerCase();
+    if (!palette.value.includes(normalized)) {
+      palette.value = [...palette.value, normalized];
+    }
+    setFillColor(normalized);
+  };
+
+  const updatePaletteColor = (color, index) => {
+    if (!color || index === null || index === undefined) return;
+    const normalized = color.toLowerCase();
+    const existingIndex = palette.value.indexOf(normalized);
+    const previous = palette.value[index];
+    if (existingIndex !== -1 && existingIndex !== index) {
+      palette.value = palette.value.filter((_, idx) => idx !== index);
+      if (fillColor.value === previous) {
+        fillColor.value = normalized;
+      }
+      return;
+    }
+    palette.value = palette.value.map((item, idx) => (idx === index ? normalized : item));
+    if (fillColor.value === previous) {
+      fillColor.value = normalized;
+      scheduleRender();
+    }
+  };
+
+  const removePaletteColor = (color) => {
+    palette.value = palette.value.filter((item) => item !== color);
+    if (fillColor.value === color) {
+      const next = palette.value[0] || "#000000";
+      fillColor.value = next;
+      scheduleRender();
+    }
+  };
+
+  const positionEditPicker = (event, input) => {
+    if (!input) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    input.style.left = `${rect.right + 8}px`;
+    input.style.top = `${rect.top}px`;
+    input.style.width = `${Math.max(28, rect.width)}px`;
+    input.style.height = `${rect.height}px`;
+  };
+
+  const resetEditPicker = (input) => {
+    if (!input) return;
+    input.style.left = "-9999px";
+    input.style.top = "-9999px";
+    input.style.width = "1px";
+    input.style.height = "1px";
+    input.style.pointerEvents = "none";
+  };
+
+  return h(
+    "div",
+    { class: "toolbar" },
+    h("h1", null, "CAG Toolkit"),
+    h(
+      "div",
+      { class: "tool-grid" },
+      toolDefs.map((def) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: `tool-btn ${tool.value === def.id ? "active" : ""}`,
+            onClick: () => setTool(def.id),
+          },
+          h("span", null, def.label),
+          h("span", { class: "key" }, def.key)
+        )
+      )
+    ),
+    h(
+      "div",
+      { class: "controls" },
+      h("label", null, "Fill Color"),
+      h(
+        "div",
+        { class: "palette" },
+        palette.value.map((color, index) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `swatch ${fillColor.value === color ? "active" : ""}`,
+              style: { backgroundColor: color },
+              onClick: () => setFillColor(color),
+              onDblClick: (event) => {
+                const input = document.getElementById(paletteEditInputId);
+                if (!input) return;
+                paletteEditIndex = index;
+                input.value = color;
+                positionEditPicker(event, input);
+                if (input.showPicker) {
+                  input.showPicker();
+                } else {
+                  input.click();
+                }
+              },
+            },
+            h(
+              "span",
+              {
+                class: "swatch-remove",
+                onClick: (event) => {
+                  event.stopPropagation();
+                  removePaletteColor(color);
+                },
+              },
+              "×"
+            )
+          )
+        ),
+        h(
+          "div",
+          { class: "swatch add" },
+          h("span", { class: "swatch-add-label" }, "+"),
+          h("input", {
+            class: "palette-input",
+            type: "color",
+            onChange: (event) => {
+              addPaletteColor(event.target.value);
+              event.target.blur();
+            },
+          })
+        ),
+        h("input", {
+          id: paletteEditInputId,
+          class: "palette-input edit",
+          type: "color",
+          onChange: (event) => {
+            updatePaletteColor(event.target.value, paletteEditIndex);
+            paletteEditIndex = null;
+            resetEditPicker(event.target);
+            event.target.blur();
+          },
+          onBlur: (event) => {
+            paletteEditIndex = null;
+            resetEditPicker(event.target);
+          },
+        })
+      )
+    ),
+    h(
+      "div",
+      { class: "thickness-controls" },
+      h("span", { class: "thickness-label" }, "Ink"),
+      h("input", {
+        type: "range",
+        min: 1,
+        max: 8,
+        step: 0.5,
+        value: inkThickness.value,
+        onInput: (event) => {
+          inkThickness.value = Number(event.target.value);
+          scheduleRender();
+        },
+      }),
+      h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
+    ),
+    h(
+      "div",
+      { class: "alpha-controls" },
+      h("span", { class: "alpha-label" }, "Fill Alpha"),
+      h("input", {
+        type: "range",
+        min: 0,
+        max: 1,
+        step: 0.05,
+        value: fillAlpha.value,
+        onInput: (event) => {
+          fillAlpha.value = Number(event.target.value);
+        },
+      }),
+      h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
+    ),
+    h(
+      "div",
+      { class: "zoom-controls" },
+      h("span", { class: "zoom-label" }, "Zoom"),
+      h(
+        "div",
+        { class: "zoom-group" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "zoom-btn",
+            onClick: () => zoomBy(1 / 1.1),
+          },
+          "-"
+        ),
+        h("span", { class: "zoom-value" }, `${Math.round(zoomValue.value * 100)}%`),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "zoom-btn",
+            onClick: () => zoomBy(1.1),
+          },
+          "+"
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "zoom-btn",
+            onClick: () => resetZoom(),
+          },
+          "0"
+        )
+      )
+    ),
+    h("div", { class: "status" }, status.value),
+    h(
+      "div",
+      { class: "hint" },
+      "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears."
+    )
+  );
+}
+
+render(h(Toolbar), document.getElementById("ui"));
+
+function setTool(id) {
+  tool.value = id;
+  toolState = { step: 0 };
+  hoverSnap = null;
+  scheduleRender();
+}
+
+function setStatus(message, timeout = 1800) {
+  status.value = message;
+  if (!message) return;
+  window.clearTimeout(setStatus._timer);
+  setStatus._timer = window.setTimeout(() => {
+    status.value = "";
+  }, timeout);
+}
+
+function scheduleRender() {
+  if (scheduleRender._queued) return;
+  scheduleRender._queued = true;
+  requestAnimationFrame(() => {
+    scheduleRender._queued = false;
+    draw();
+  });
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+function worldToScreen(point) {
+  return {
+    x: (point.x + view.panX) * view.scale,
+    y: (point.y + view.panY) * view.scale,
+  };
+}
+
+function screenToWorld(point) {
+  return {
+    x: point.x / view.scale - view.panX,
+    y: point.y / view.scale - view.panY,
+  };
+}
+
+function getWorldBounds() {
+  const rect = canvas.getBoundingClientRect();
+  const topLeft = screenToWorld({ x: 0, y: 0 });
+  const bottomRight = screenToWorld({ x: rect.width, y: rect.height });
+  return {
+    minX: Math.min(topLeft.x, bottomRight.x),
+    minY: Math.min(topLeft.y, bottomRight.y),
+    maxX: Math.max(topLeft.x, bottomRight.x),
+    maxY: Math.max(topLeft.y, bottomRight.y),
+    width: Math.abs(bottomRight.x - topLeft.x),
+    height: Math.abs(bottomRight.y - topLeft.y),
+  };
+}
+
+function getRasterScale() {
+  return view.scale * (window.devicePixelRatio || 1);
+}
+
+function clampScale(scale) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
+}
+
+function applyZoom(nextScale, screenPoint) {
+  const rect = canvas.getBoundingClientRect();
+  const screen = screenPoint ?? { x: rect.width / 2, y: rect.height / 2 };
+  const world = screenToWorld(screen);
+  view.scale = clampScale(nextScale);
+  view.panX = screen.x / view.scale - world.x;
+  view.panY = screen.y / view.scale - world.y;
+  zoomValue.value = view.scale;
+  scheduleRerasterizeFills();
+  scheduleRender();
+}
+
+function zoomBy(factor, screenPoint) {
+  applyZoom(view.scale * factor, screenPoint);
+}
+
+function resetZoom() {
+  view.scale = 1;
+  view.panX = 0;
+  view.panY = 0;
+  zoomValue.value = view.scale;
+  scheduleRerasterizeFills();
+  scheduleRender();
+}
+
+function vec(x, y) {
+  return { x, y };
+}
+
+function add(a, b) {
+  return { x: a.x + b.x, y: a.y + b.y };
+}
+
+function sub(a, b) {
+  return { x: a.x - b.x, y: a.y - b.y };
+}
+
+function mul(a, s) {
+  return { x: a.x * s, y: a.y * s };
+}
+
+function dot(a, b) {
+  return a.x * b.x + a.y * b.y;
+}
+
+function cross(a, b) {
+  return a.x * b.y - a.y * b.x;
+}
+
+function len(a) {
+  return Math.hypot(a.x, a.y);
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function normalizeAngle(angle) {
+  let a = angle % (Math.PI * 2);
+  if (a < 0) a += Math.PI * 2;
+  return a;
+}
+
+function angleInArc(angle, start, end) {
+  const a = normalizeAngle(angle);
+  const s = normalizeAngle(start);
+  const e = normalizeAngle(end);
+  if (s <= e) return a >= s - EPS && a <= e + EPS;
+  return a >= s - EPS || a <= e + EPS;
+}
+
+function angleOnArc(angle, start, end, ccw) {
+  if (ccw) return angleInArc(angle, end, start);
+  return angleInArc(angle, start, end);
+}
+
+function lineParam(line, point) {
+  const d = sub(line.p1, line.p0);
+  const denom = dot(d, d);
+  if (denom < EPS) return 0;
+  return dot(sub(point, line.p0), d) / denom;
+}
+
+function closestPointOnLine(line, point) {
+  const t = lineParam(line, point);
+  const d = sub(line.p1, line.p0);
+  return add(line.p0, mul(d, t));
+}
+
+function closestPointOnCircle(circle, point) {
+  const r = dist(circle.c, circle.rp);
+  const angle = Math.atan2(point.y - circle.c.y, point.x - circle.c.x);
+  return {
+    x: circle.c.x + Math.cos(angle) * r,
+    y: circle.c.y + Math.sin(angle) * r,
+  };
+}
+
+function distancePointToSegment(point, a, b) {
+  const ab = sub(b, a);
+  const denom = dot(ab, ab);
+  if (denom < EPS) return dist(point, a);
+  const t = Math.max(0, Math.min(1, dot(sub(point, a), ab) / denom));
+  const proj = add(a, mul(ab, t));
+  return dist(point, proj);
+}
+
+function closestPointOnArc(arc, point) {
+  const r = dist(arc.c, arc.rp);
+  const rawAngle = Math.atan2(point.y - arc.c.y, point.x - arc.c.x);
+  const angle = normalizeAngle(rawAngle);
+  if (angleInArc(angle, arc.startAngle, arc.endAngle)) {
+    return {
+      x: arc.c.x + Math.cos(angle) * r,
+      y: arc.c.y + Math.sin(angle) * r,
+    };
+  }
+  const start = normalizeAngle(arc.startAngle);
+  const end = normalizeAngle(arc.endAngle);
+  const distToStart = angleDistance(start, angle);
+  const distToEnd = angleDistance(end, angle);
+  const chosen = distToStart < distToEnd ? start : end;
+  return {
+    x: arc.c.x + Math.cos(chosen) * r,
+    y: arc.c.y + Math.sin(chosen) * r,
+  };
+}
+
+function angleDistance(a, b) {
+  const diff = Math.abs(normalizeAngle(a) - normalizeAngle(b));
+  return Math.min(diff, Math.PI * 2 - diff);
+}
+
+function isCirclePrimitive(prim) {
+  return prim.type === "circle" || prim.type === "measure";
+}
+
+function circleData(prim) {
+  return { c: prim.c, r: dist(prim.c, prim.rp) };
+}
+
+function clipLineToBounds(line, bounds) {
+  const dx = line.p1.x - line.p0.x;
+  const dy = line.p1.y - line.p0.y;
+  const points = [];
+
+  if (Math.abs(dx) > EPS) {
+    let t = (bounds.minX - line.p0.x) / dx;
+    let y = line.p0.y + t * dy;
+    if (y >= bounds.minY - EPS && y <= bounds.maxY + EPS) {
+      points.push({ x: bounds.minX, y, t });
+    }
+    t = (bounds.maxX - line.p0.x) / dx;
+    y = line.p0.y + t * dy;
+    if (y >= bounds.minY - EPS && y <= bounds.maxY + EPS) {
+      points.push({ x: bounds.maxX, y, t });
+    }
+  }
+
+  if (Math.abs(dy) > EPS) {
+    let t = (bounds.minY - line.p0.y) / dy;
+    let x = line.p0.x + t * dx;
+    if (x >= bounds.minX - EPS && x <= bounds.maxX + EPS) {
+      points.push({ x, y: bounds.minY, t });
+    }
+    t = (bounds.maxY - line.p0.y) / dy;
+    x = line.p0.x + t * dx;
+    if (x >= bounds.minX - EPS && x <= bounds.maxX + EPS) {
+      points.push({ x, y: bounds.maxY, t });
+    }
+  }
+
+  const unique = [];
+  for (const p of points) {
+    if (!unique.some((u) => dist(u, p) < 0.5)) unique.push(p);
+  }
+
+  if (unique.length < 2) return null;
+
+  unique.sort((a, b) => a.t - b.t);
+  return {
+    min: unique[0],
+    max: unique[unique.length - 1],
+  };
+}
+
+function computeLineLineIntersections(a, b) {
+  const p = a.p0;
+  const r = sub(a.p1, a.p0);
+  const q = b.p0;
+  const s = sub(b.p1, b.p0);
+  const rxs = cross(r, s);
+  if (Math.abs(rxs) < EPS) return [];
+  const qmp = sub(q, p);
+  const t = cross(qmp, s) / rxs;
+  const u = cross(qmp, r) / rxs;
+  const point = add(p, mul(r, t));
+  return [{ point, paramA: t, paramB: u }];
+}
+
+function computeLineCircleIntersections(line, circle) {
+  const d = sub(line.p1, line.p0);
+  const f = sub(line.p0, circle.c);
+  const r = circle.r;
+  const a = dot(d, d);
+  const b = 2 * dot(f, d);
+  const c = dot(f, f) - r * r;
+  const disc = b * b - 4 * a * c;
+  if (disc < -EPS) return [];
+  if (Math.abs(disc) <= EPS) {
+    const t = -b / (2 * a);
+    const point = add(line.p0, mul(d, t));
+    const angle = normalizeAngle(Math.atan2(point.y - circle.c.y, point.x - circle.c.x));
+    return [{ point, paramLine: t, paramCircle: angle }];
+  }
+  const sqrt = Math.sqrt(disc);
+  const t1 = (-b - sqrt) / (2 * a);
+  const t2 = (-b + sqrt) / (2 * a);
+  const point1 = add(line.p0, mul(d, t1));
+  const point2 = add(line.p0, mul(d, t2));
+  const angle1 = normalizeAngle(Math.atan2(point1.y - circle.c.y, point1.x - circle.c.x));
+  const angle2 = normalizeAngle(Math.atan2(point2.y - circle.c.y, point2.x - circle.c.x));
+  return [
+    { point: point1, paramLine: t1, paramCircle: angle1 },
+    { point: point2, paramLine: t2, paramCircle: angle2 },
+  ];
+}
+
+function computeCircleCircleIntersections(a, b) {
+  const c1 = a.c;
+  const r1 = a.r;
+  const c2 = b.c;
+  const r2 = b.r;
+  const d = dist(c1, c2);
+  if (d < EPS && Math.abs(r1 - r2) < EPS) return [];
+  if (d > r1 + r2 + EPS) return [];
+  if (d < Math.abs(r1 - r2) - EPS) return [];
+  const aLen = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+  const hSq = r1 * r1 - aLen * aLen;
+  if (hSq < -EPS) return [];
+  const h = Math.sqrt(Math.max(0, hSq));
+  const mid = {
+    x: c1.x + (aLen * (c2.x - c1.x)) / d,
+    y: c1.y + (aLen * (c2.y - c1.y)) / d,
+  };
+  if (h < EPS) {
+    const angle1 = normalizeAngle(Math.atan2(mid.y - c1.y, mid.x - c1.x));
+    const angle2 = normalizeAngle(Math.atan2(mid.y - c2.y, mid.x - c2.x));
+    return [{ point: mid, paramA: angle1, paramB: angle2 }];
+  }
+  const rx = -(c2.y - c1.y) * (h / d);
+  const ry = (c2.x - c1.x) * (h / d);
+  const p1 = { x: mid.x + rx, y: mid.y + ry };
+  const p2 = { x: mid.x - rx, y: mid.y - ry };
+  const angle1a = normalizeAngle(Math.atan2(p1.y - c1.y, p1.x - c1.x));
+  const angle1b = normalizeAngle(Math.atan2(p1.y - c2.y, p1.x - c2.x));
+  const angle2a = normalizeAngle(Math.atan2(p2.y - c1.y, p2.x - c1.x));
+  const angle2b = normalizeAngle(Math.atan2(p2.y - c2.y, p2.x - c2.x));
+  return [
+    { point: p1, paramA: angle1a, paramB: angle1b },
+    { point: p2, paramA: angle2a, paramB: angle2b },
+  ];
+}
+
+function computeIntersectionsForPair(a, b) {
+  if (a.type === "line" && b.type === "line") {
+    return computeLineLineIntersections(a, b);
+  }
+  if (a.type === "line" && isCirclePrimitive(b)) {
+    const data = circleData(b);
+    const hits = computeLineCircleIntersections(a, data);
+    return hits
+      .filter((hit) => {
+        if (b.type !== "measure") return true;
+        return angleInArc(hit.paramCircle, b.startAngle, b.endAngle);
+      })
+      .map((hit) => ({ point: hit.point, paramA: hit.paramLine, paramB: hit.paramCircle }));
+  }
+  if (b.type === "line" && isCirclePrimitive(a)) {
+    const data = circleData(a);
+    const hits = computeLineCircleIntersections(b, data);
+    return hits
+      .filter((hit) => {
+        if (a.type !== "measure") return true;
+        return angleInArc(hit.paramCircle, a.startAngle, a.endAngle);
+      })
+      .map((hit) => ({ point: hit.point, paramA: hit.paramCircle, paramB: hit.paramLine }));
+  }
+  if (isCirclePrimitive(a) && isCirclePrimitive(b)) {
+    const dataA = circleData(a);
+    const dataB = circleData(b);
+    const hits = computeCircleCircleIntersections(dataA, dataB);
+    return hits
+      .filter((hit) => {
+        if (a.type === "measure" && !angleInArc(hit.paramA, a.startAngle, a.endAngle)) {
+          return false;
+        }
+        if (b.type === "measure" && !angleInArc(hit.paramB, b.startAngle, b.endAngle)) {
+          return false;
+        }
+        return true;
+      })
+      .map((hit) => ({ point: hit.point, paramA: hit.paramA, paramB: hit.paramB }));
+  }
+  return [];
+}
+
+function recomputeIntersections() {
+  const list = [];
+  const byPrim = new Map();
+  const byId = new Map();
+
+  for (const prim of state.primitives) {
+    byPrim.set(prim.id, []);
+  }
+
+  for (let i = 0; i < state.primitives.length; i += 1) {
+    for (let j = i + 1; j < state.primitives.length; j += 1) {
+      const a = state.primitives[i];
+      const b = state.primitives[j];
+      const ordered = a.id < b.id ? [a, b] : [b, a];
+      const primary = ordered[0];
+      const secondary = ordered[1];
+      const hits = computeIntersectionsForPair(primary, secondary);
+      hits.sort((m, n) => m.paramA - n.paramA);
+      hits.forEach((hit, idx) => {
+        const id = `ix-${primary.id}-${secondary.id}-${idx}`;
+        const entry = {
+          id,
+          point: hit.point,
+          aId: primary.id,
+          bId: secondary.id,
+          aParam: hit.paramA,
+          bParam: hit.paramB,
+        };
+        list.push(entry);
+        byId.set(id, entry);
+        byPrim.get(primary.id)?.push({ id, point: hit.point, param: hit.paramA });
+        byPrim.get(secondary.id)?.push({ id, point: hit.point, param: hit.paramB });
+      });
+    }
+  }
+
+  for (const [primId, items] of byPrim.entries()) {
+    items.sort((a, b) => a.param - b.param);
+    byPrim.set(primId, items);
+  }
+
+  intersections = { list, byPrim, byId };
+  scheduleRender();
+}
+
+function snapshot() {
+  return {
+    primitives: state.primitives.map((p) => ({ ...p })),
+    ink: state.ink.map((seg) => ({
+      ...seg,
+      a: seg.a ? { ...seg.a } : null,
+      b: seg.b ? { ...seg.b } : null,
+    })),
+    fills: state.fills.map((fill) => ({
+      id: fill.id,
+      origin: { ...fill.origin },
+      width: fill.width,
+      height: fill.height,
+      mask: new Uint8Array(fill.mask),
+      color: fill.color,
+      alpha: fill.alpha,
+      pixelSize: fill.pixelSize,
+      seed: fill.seed ? { ...fill.seed } : null,
+      bounds: fill.bounds ? { ...fill.bounds } : null,
+      boundSegIds: [...fill.boundSegIds],
+    })),
+    nextPrimId: state.nextPrimId,
+    nextInkId: state.nextInkId,
+    nextFillId: state.nextFillId,
+    measureDistance: measureDistance.value,
+  };
+}
+
+function restore(snap) {
+  state.primitives = snap.primitives.map((p) => ({ ...p }));
+  state.ink = snap.ink.map((seg) => ({
+    ...seg,
+    a: seg.a ? { ...seg.a } : null,
+    b: seg.b ? { ...seg.b } : null,
+  }));
+  state.fills = snap.fills.map((fill) => {
+    const restored = {
+      ...fill,
+      origin: { ...fill.origin },
+      seed: fill.seed ? { ...fill.seed } : null,
+      bounds: fill.bounds ? { ...fill.bounds } : null,
+      mask: new Uint8Array(fill.mask),
+    };
+    restored.canvas = buildFillCanvas(restored);
+    return restored;
+  });
+  state.nextPrimId = snap.nextPrimId;
+  state.nextInkId = snap.nextInkId;
+  state.nextFillId = snap.nextFillId;
+  measureDistance.value = snap.measureDistance;
+  recomputeIntersections();
+  rerasterizeFills();
+  scheduleRender();
+}
+
+function commitHistory() {
+  history.past.push(snapshot());
+  history.future = [];
+}
+
+function undo() {
+  if (!history.past.length) return;
+  history.future.push(snapshot());
+  const prev = history.past.pop();
+  restore(prev);
+}
+
+function redo() {
+  if (!history.future.length) return;
+  history.past.push(snapshot());
+  const next = history.future.pop();
+  restore(next);
+}
+
+function setStrokeWidth(px) {
+  ctx.lineWidth = px / view.scale;
+}
+
+function drawLine(line, strokeStyle, lineWidthPx, dashed = false) {
+  const bounds = getWorldBounds();
+  const clip = clipLineToBounds(line, bounds);
+  if (!clip) return;
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  setStrokeWidth(lineWidthPx);
+  if (dashed) {
+    ctx.setLineDash([6 / view.scale, 6 / view.scale]);
+  } else {
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  ctx.moveTo(clip.min.x, clip.min.y);
+  ctx.lineTo(clip.max.x, clip.max.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCircle(circle, strokeStyle, lineWidthPx, dashed = false) {
+  const radius = dist(circle.c, circle.rp);
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  setStrokeWidth(lineWidthPx);
+  if (dashed) {
+    ctx.setLineDash([6 / view.scale, 6 / view.scale]);
+  } else {
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  ctx.arc(circle.c.x, circle.c.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawMeasure(arc, strokeStyle, lineWidthPx, dashed = true) {
+  const radius = dist(arc.c, arc.rp);
+  ctx.save();
+  ctx.strokeStyle = strokeStyle;
+  setStrokeWidth(lineWidthPx);
+  if (dashed) {
+    ctx.setLineDash([5 / view.scale, 6 / view.scale]);
+  } else {
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();
+  ctx.arc(arc.c.x, arc.c.y, radius, arc.startAngle, arc.endAngle, false);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function resolveLineEndpoint(endpoint, line, bounds) {
+  const clip = clipLineToBounds(line, bounds);
+  if (!clip) return null;
+  if (endpoint.type === "intersection") {
+    const inter = intersections.byId.get(endpoint.id);
+    return inter?.point ?? null;
+  }
+  if (endpoint.type === "clip") {
+    return endpoint.which === "min" ? clip.min : clip.max;
+  }
+  return null;
+}
+
+function drawInkSegment(seg) {
+  const prim = state.primitives.find((p) => p.id === seg.primId);
+  if (!prim) return;
+  ctx.save();
+  ctx.strokeStyle = "#0b0b0f";
+  setStrokeWidth(seg.thickness ?? 2);
+  ctx.setLineDash([]);
+
+  if (seg.kind === "line") {
+    const bounds = getWorldBounds();
+    const a = resolveLineEndpoint(seg.a, prim, bounds);
+    const b = resolveLineEndpoint(seg.b, prim, bounds);
+    if (!a || !b) {
+      ctx.restore();
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  if (seg.kind === "circle") {
+    const radius = dist(prim.c, prim.rp);
+    if (seg.full) {
+      ctx.beginPath();
+      ctx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      const aInter = intersections.byId.get(seg.a.id);
+      const bInter = intersections.byId.get(seg.b.id);
+      if (!aInter || !bInter) {
+        ctx.restore();
+        return;
+      }
+      const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
+      const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+      ctx.beginPath();
+      ctx.arc(prim.c.x, prim.c.y, radius, aAngle, bAngle, seg.ccw);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawIntersections() {
+  ctx.save();
+  ctx.fillStyle = "#2b6bf3";
+  const radius = 3 / view.scale;
+  intersections.list.forEach((inter) => {
+    ctx.beginPath();
+    ctx.arc(inter.point.x, inter.point.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
+function drawPreview() {
+  ctx.save();
+  ctx.strokeStyle = "#2b6bf3";
+  ctx.fillStyle = "#2b6bf3";
+  const pointRadius = 3.5 / view.scale;
+  const pending = toolState;
+  const snapped = hoverSnap?.point || pointerWorld;
+
+  if (tool.value === "compass" && pending.center) {
+    drawCircle({ c: pending.center, rp: snapped }, "#2b6bf3", 1.5, true);
+    ctx.beginPath();
+    ctx.arc(pending.center.x, pending.center.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (tool.value === "straightedge" && pending.anchor) {
+    drawLine({ p0: pending.anchor, p1: snapped }, "#2b6bf3", 1.5, true);
+    ctx.beginPath();
+    ctx.arc(pending.anchor.x, pending.anchor.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (tool.value === "copy" && pending.p0) {
+    ctx.setLineDash([6 / view.scale, 6 / view.scale]);
+    ctx.beginPath();
+    ctx.moveTo(pending.p0.x, pending.p0.y);
+    ctx.lineTo(snapped.x, snapped.y);
+    setStrokeWidth(1.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(pending.p0.x, pending.p0.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (tool.value === "paste" && pending.center && measureDistance.value) {
+    const radius = measureDistance.value;
+    drawCircle({ c: pending.center, rp: { x: pending.center.x + radius, y: pending.center.y } }, "#2b6bf3", 1.2, true);
+    const angle = Math.atan2(snapped.y - pending.center.y, snapped.x - pending.center.x);
+    const startAngle = normalizeAngle(angle - ARC_SPAN / 2);
+    const endAngle = normalizeAngle(angle + ARC_SPAN / 2);
+    ctx.save();
+    ctx.strokeStyle = "#2b6bf3";
+    setStrokeWidth(1.5);
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(pending.center.x, pending.center.y, radius, startAngle, endAngle, false);
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(pending.center.x, pending.center.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawSnapHighlight() {
+  if (!hoverSnap) return;
+  ctx.save();
+  ctx.strokeStyle = "#ff9f1c";
+  setStrokeWidth(1.5);
+  ctx.beginPath();
+  ctx.arc(hoverSnap.point.x, hoverSnap.point.y, 5 / view.scale, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function draw() {
+  resizeCanvas();
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, view.panX * view.scale * dpr, view.panY * view.scale * dpr);
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  state.fills.forEach((fill) => {
+    if (!fill.canvas) fill.canvas = buildFillCanvas(fill);
+    const pixelSize = fill.pixelSize || 1;
+    const w = fill.width * pixelSize;
+    const h = fill.height * pixelSize;
+    ctx.drawImage(fill.canvas, fill.origin.x, fill.origin.y, w, h);
+  });
+  ctx.restore();
+
+  state.primitives.forEach((prim) => {
+    if (prim.type === "line") {
+      drawLine(prim, "#8fbef8", 1.2);
+    }
+    if (prim.type === "circle") {
+      drawCircle(prim, "#8fbef8", 1.2);
+      ctx.save();
+      ctx.fillStyle = "#8fbef8";
+      ctx.beginPath();
+      ctx.arc(prim.c.x, prim.c.y, 2.5 / view.scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (prim.type === "measure") {
+      drawMeasure(prim, "#8fbef8", 1.2, true);
+    }
+  });
+
+  state.ink.forEach((seg) => drawInkSegment(seg));
+
+  drawIntersections();
+  drawPreview();
+  drawSnapHighlight();
+}
+
+function getSnapPoint(worldPoint) {
+  const snapRadius = SNAP_PX / view.scale;
+  let best = null;
+
+  for (const inter of intersections.list) {
+    const d = dist(inter.point, worldPoint);
+    if (d <= snapRadius) {
+      if (!best || d < best.distance) {
+        best = { point: inter.point, distance: d, type: "intersection" };
+      }
+    }
+  }
+  if (best) return best;
+
+  for (const prim of state.primitives) {
+    if (prim.type !== "circle") continue;
+    const d = dist(prim.c, worldPoint);
+    if (d <= snapRadius) {
+      if (!best || d < best.distance) {
+        best = { point: prim.c, distance: d, type: "center", primId: prim.id };
+      }
+    }
+  }
+  if (best) return best;
+
+  for (const prim of state.primitives) {
+    if (prim.type !== "line") continue;
+    const cp = closestPointOnLine(prim, worldPoint);
+    const d = dist(cp, worldPoint);
+    if (d <= snapRadius) {
+      if (!best || d < best.distance) {
+        best = { point: cp, distance: d, type: "line", primId: prim.id };
+      }
+    }
+  }
+  if (best) return best;
+
+  for (const prim of state.primitives) {
+    if (prim.type !== "circle") continue;
+    const cp = closestPointOnCircle(prim, worldPoint);
+    const d = dist(cp, worldPoint);
+    if (d <= snapRadius) {
+      if (!best || d < best.distance) {
+        best = { point: cp, distance: d, type: "circle", primId: prim.id };
+      }
+    }
+  }
+  if (best) return best;
+
+  for (const prim of state.primitives) {
+    if (prim.type !== "measure") continue;
+    const cp = closestPointOnArc(prim, worldPoint);
+    const d = dist(cp, worldPoint);
+    if (d <= snapRadius) {
+      if (!best || d < best.distance) {
+        best = { point: cp, distance: d, type: "measure", primId: prim.id };
+      }
+    }
+  }
+
+  return best;
+}
+
+function hitTestPrimitive(worldPoint) {
+  const hitRadius = HIT_PX / view.scale;
+  let best = null;
+  for (const prim of state.primitives) {
+    if (prim.type === "line") {
+      const cp = closestPointOnLine(prim, worldPoint);
+      const d = dist(cp, worldPoint);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
+    if (prim.type === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      const d = Math.abs(dist(prim.c, worldPoint) - radius);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
+    if (prim.type === "measure") {
+      const cp = closestPointOnArc(prim, worldPoint);
+      const d = dist(cp, worldPoint);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
+  }
+  return best?.prim || null;
+}
+
+function hitTestInk(worldPoint) {
+  const hitRadius = HIT_PX / view.scale;
+  const bounds = getWorldBounds();
+  let best = null;
+
+  for (const seg of state.ink) {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) continue;
+    if (seg.kind === "line") {
+      const a = resolveLineEndpoint(seg.a, prim, bounds);
+      const b = resolveLineEndpoint(seg.b, prim, bounds);
+      if (!a || !b) continue;
+      const d = distancePointToSegment(worldPoint, a, b);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { seg, distance: d };
+      }
+    }
+    if (seg.kind === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      if (seg.full) {
+        const d = Math.abs(dist(prim.c, worldPoint) - radius);
+        if (d <= hitRadius) {
+          if (!best || d < best.distance) best = { seg, distance: d };
+        }
+      } else {
+        const aInter = intersections.byId.get(seg.a.id);
+        const bInter = intersections.byId.get(seg.b.id);
+        if (!aInter || !bInter) continue;
+        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
+        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        const angle = normalizeAngle(Math.atan2(worldPoint.y - prim.c.y, worldPoint.x - prim.c.x));
+        if (!angleOnArc(angle, aAngle, bAngle, seg.ccw)) continue;
+        const d = Math.abs(dist(prim.c, worldPoint) - radius);
+        if (d <= hitRadius) {
+          if (!best || d < best.distance) best = { seg, distance: d };
+        }
+      }
+    }
+  }
+
+  return best?.seg || null;
+}
+
+function hitTestFill(worldPoint) {
+  for (let i = state.fills.length - 1; i >= 0; i -= 1) {
+    const fill = state.fills[i];
+    const pixelSize = fill.pixelSize || 1;
+    const localX = Math.floor((worldPoint.x - fill.origin.x) / pixelSize);
+    const localY = Math.floor((worldPoint.y - fill.origin.y) / pixelSize);
+    if (localX < 0 || localY < 0 || localX >= fill.width || localY >= fill.height) continue;
+    const idx = localY * fill.width + localX;
+    if (fill.mask[idx]) return fill;
+  }
+  return null;
+}
+
+function deleteInkSegment(segId) {
+  state.ink = state.ink.filter((seg) => seg.id !== segId);
+  state.fills = state.fills.filter((fill) => !fill.boundSegIds.includes(segId));
+  scheduleRender();
+}
+
+function deleteFill(fillId) {
+  state.fills = state.fills.filter((fill) => fill.id !== fillId);
+  scheduleRender();
+}
+
+function addPrimitive(prim) {
+  state.primitives = [...state.primitives, prim];
+  recomputeIntersections();
+}
+
+function inkSegmentKey(seg) {
+  if (seg.kind === "line") {
+    const aKey = seg.a?.type === "intersection" ? `i:${seg.a.id}` : `c:${seg.a?.which}`;
+    const bKey = seg.b?.type === "intersection" ? `i:${seg.b.id}` : `c:${seg.b?.which}`;
+    const ordered = [aKey, bKey].sort();
+    return `line:${seg.primId}:${ordered[0]}:${ordered[1]}`;
+  }
+  if (seg.kind === "circle") {
+    if (seg.full) return `circle:${seg.primId}:full`;
+    return `circle:${seg.primId}:a:${seg.a?.id}:b:${seg.b?.id}:ccw:${seg.ccw ? 1 : 0}`;
+  }
+  return `seg:${seg.primId}:${seg.kind}`;
+}
+
+function addInkSegment(seg) {
+  const key = inkSegmentKey(seg);
+  const index = state.ink.findIndex((existing) => inkSegmentKey(existing) === key);
+  if (index !== -1) {
+    const existing = state.ink[index];
+    const updated = {
+      ...existing,
+      thickness: seg.thickness ?? existing.thickness ?? 2,
+    };
+    state.ink = [...state.ink.slice(0, index), updated, ...state.ink.slice(index + 1)];
+    scheduleRender();
+    return;
+  }
+  state.ink = [...state.ink, seg];
+  scheduleRender();
+}
+
+function addFillRegion(fill) {
+  state.fills = [...state.fills, fill];
+  scheduleRender();
+}
+
+function rerasterizeFills() {
+  if (!state.fills.length) return;
+  const currentBounds = getWorldBounds();
+  const updated = state.fills.map((fill) => {
+    if (!fill.seed || !fill.bounds) return fill;
+    const seed = findSeedForFill(fill, currentBounds);
+    if (!seed) return fill;
+    const raster = rasterizeFill(seed, currentBounds);
+    if (!raster.ok) return fill;
+    const next = {
+      ...fill,
+      ...raster.data,
+      bounds: normalizeBounds(currentBounds),
+      seed: { x: seed.x, y: seed.y },
+    };
+    next.canvas = buildFillCanvas(next);
+    return next;
+  });
+  state.fills = updated;
+  scheduleRender();
+}
+
+function scheduleRerasterizeFills(delay = 140) {
+  if (!state.fills.length) return;
+  window.clearTimeout(rerasterizeTimer);
+  rerasterizeTimer = window.setTimeout(() => {
+    rerasterizeTimer = null;
+    rerasterizeFills();
+  }, delay);
+}
+
+function buildFillCanvas(fill) {
+  const off = document.createElement("canvas");
+  off.width = fill.width;
+  off.height = fill.height;
+  const octx = off.getContext("2d");
+  const image = octx.createImageData(fill.width, fill.height);
+  const [r, g, b] = hexToRgb(fill.color);
+  const alpha = Math.round(255 * Math.min(1, Math.max(0, fill.alpha ?? 0.65)));
+  for (let i = 0; i < fill.mask.length; i += 1) {
+    if (!fill.mask[i]) continue;
+    const idx = i * 4;
+    image.data[idx] = r;
+    image.data[idx + 1] = g;
+    image.data[idx + 2] = b;
+    image.data[idx + 3] = alpha;
+  }
+  octx.putImageData(image, 0, 0);
+  return off;
+}
+
+function pointInFillMask(fill, point) {
+  if (!fill.mask || !fill.origin) return false;
+  const pixelSize = fill.pixelSize || 1;
+  const localX = Math.floor((point.x - fill.origin.x) / pixelSize);
+  const localY = Math.floor((point.y - fill.origin.y) / pixelSize);
+  if (localX < 0 || localY < 0 || localX >= fill.width || localY >= fill.height) return false;
+  const idx = localY * fill.width + localX;
+  return fill.mask[idx] === 1;
+}
+
+function findSeedForFill(fill, bounds) {
+  const normalized = normalizeBounds(bounds);
+  const maxX = normalized.maxX;
+  const maxY = normalized.maxY;
+  const minX = normalized.minX;
+  const minY = normalized.minY;
+
+  if (fill.seed) {
+    if (fill.seed.x >= minX && fill.seed.x <= maxX && fill.seed.y >= minY && fill.seed.y <= maxY) {
+      return fill.seed;
+    }
+  }
+
+  const xs = [
+    minX + (maxX - minX) * 0.25,
+    (minX + maxX) / 2,
+    minX + (maxX - minX) * 0.75,
+  ];
+  const ys = [
+    minY + (maxY - minY) * 0.25,
+    (minY + maxY) / 2,
+    minY + (maxY - minY) * 0.75,
+  ];
+  for (const x of xs) {
+    for (const y of ys) {
+      const candidate = { x, y };
+      if (pointInFillMask(fill, candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function hexToRgb(hex) {
+  const clean = hex.replace("#", "");
+  const value = parseInt(clean, 16);
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  return [r, g, b];
+}
+
+function inkLineSegment(line, worldPoint) {
+  const list = intersections.byPrim.get(line.id) || [];
+  const tClick = lineParam(line, worldPoint);
+  let before = null;
+  let after = null;
+  list.forEach((inter) => {
+    if (inter.param < tClick) before = inter;
+    if (inter.param > tClick && !after) after = inter;
+  });
+
+  const bounds = getWorldBounds();
+  const clip = clipLineToBounds(line, bounds);
+  if (!clip) return;
+
+  let a;
+  let b;
+
+  if (!before && !after) {
+    a = { type: "clip", which: "min" };
+    b = { type: "clip", which: "max" };
+  } else {
+    if (before) {
+      a = { type: "intersection", id: before.id };
+    } else {
+      a = { type: "clip", which: "min" };
+    }
+    if (after) {
+      b = { type: "intersection", id: after.id };
+    } else {
+      b = { type: "clip", which: "max" };
+    }
+  }
+
+  const seg = {
+    id: state.nextInkId++,
+    primId: line.id,
+    kind: "line",
+    a,
+    b,
+    thickness: inkThickness.value,
+  };
+  addInkSegment(seg);
+}
+
+function inkCircleSegment(circle, worldPoint) {
+  const list = intersections.byPrim.get(circle.id) || [];
+  const angleClick = normalizeAngle(Math.atan2(worldPoint.y - circle.c.y, worldPoint.x - circle.c.x));
+  if (list.length < 2) {
+    const seg = {
+      id: state.nextInkId++,
+      primId: circle.id,
+      kind: "circle",
+      full: true,
+      thickness: inkThickness.value,
+    };
+    addInkSegment(seg);
+    return;
+  }
+  let prev = list[list.length - 1];
+  let next = list[0];
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i].param <= angleClick) {
+      prev = list[i];
+      next = list[(i + 1) % list.length];
+    }
+  }
+  const seg = {
+    id: state.nextInkId++,
+    primId: circle.id,
+    kind: "circle",
+    full: false,
+    a: { type: "intersection", id: prev.id },
+    b: { type: "intersection", id: next.id },
+    ccw: false,
+    thickness: inkThickness.value,
+  };
+  addInkSegment(seg);
+}
+
+function pruneInkSegments() {
+  const removed = new Set();
+  const newInk = [];
+
+  for (const seg of state.ink) {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) {
+      removed.add(seg.id);
+      continue;
+    }
+    if (seg.kind === "line") {
+      const endpoints = [seg.a, seg.b];
+      let valid = true;
+      for (const endpoint of endpoints) {
+        if (endpoint.type === "intersection") {
+          const inter = intersections.byId.get(endpoint.id);
+          if (!inter) valid = false;
+        }
+      }
+      if (!valid) {
+        removed.add(seg.id);
+        continue;
+      }
+    }
+    if (seg.kind === "circle") {
+      const inters = intersections.byPrim.get(prim.id) || [];
+      if (seg.full) {
+        if (inters.length >= 2) {
+          removed.add(seg.id);
+          continue;
+        }
+      } else {
+        const aOk = intersections.byId.has(seg.a.id);
+        const bOk = intersections.byId.has(seg.b.id);
+        if (!aOk || !bOk) {
+          removed.add(seg.id);
+          continue;
+        }
+      }
+    }
+    newInk.push(seg);
+  }
+
+  state.ink = newInk;
+  if (removed.size > 0) {
+    state.fills = state.fills.filter((fill) => !fill.boundSegIds.some((id) => removed.has(id)));
+  }
+}
+
+function deletePrimitive(id) {
+  const prim = state.primitives.find((p) => p.id === id);
+  if (!prim) return;
+  commitHistory();
+  state.primitives = state.primitives.filter((p) => p.id !== id);
+  const removedInk = state.ink.filter((seg) => seg.primId === id).map((seg) => seg.id);
+  state.ink = state.ink.filter((seg) => seg.primId !== id);
+  recomputeIntersections();
+  pruneInkSegments();
+  if (removedInk.length) {
+    state.fills = state.fills.filter((fill) => !fill.boundSegIds.some((segId) => removedInk.includes(segId)));
+  }
+  scheduleRender();
+}
+
+function normalizeBounds(bounds) {
+  return {
+    ...bounds,
+    maxX: bounds.maxX ?? bounds.minX + bounds.width,
+    maxY: bounds.maxY ?? bounds.minY + bounds.height,
+    width: bounds.width ?? (bounds.maxX - bounds.minX),
+    height: bounds.height ?? (bounds.maxY - bounds.minY),
+  };
+}
+
+function rasterizeFill(seedWorld, boundsWorld) {
+  const bounds = normalizeBounds(boundsWorld);
+  if (bounds.width <= EPS || bounds.height <= EPS) return { ok: false };
+  let scale = getRasterScale();
+  const area = bounds.width * bounds.height;
+  if (area > 0) {
+    const maxScaleByPixels = Math.sqrt(MAX_FILL_PIXELS / area);
+    scale = Math.min(scale, maxScaleByPixels);
+  }
+  scale = Math.min(scale, MAX_FILL_DIM / bounds.width, MAX_FILL_DIM / bounds.height);
+  if (!Number.isFinite(scale) || scale <= 0) return { ok: false };
+  const pixelSize = 1 / scale;
+  const originX = bounds.minX;
+  const originY = bounds.minY;
+  const width = Math.max(1, Math.ceil(bounds.width * scale));
+  const height = Math.max(1, Math.ceil(bounds.height * scale));
+  if (width <= 2 || height <= 2) return { ok: false };
+
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = width;
+  maskCanvas.height = height;
+  const mctx = maskCanvas.getContext("2d");
+  mctx.clearRect(0, 0, width, height);
+  mctx.save();
+  mctx.setTransform(scale, 0, 0, scale, -originX * scale, -originY * scale);
+  mctx.strokeStyle = "#000";
+  mctx.lineWidth = 1 / scale;
+  mctx.setLineDash([]);
+  mctx.lineCap = "butt";
+
+  state.ink.forEach((seg) => {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    if (seg.kind === "line") {
+      const a = resolveLineEndpoint(seg.a, prim, bounds);
+      const b = resolveLineEndpoint(seg.b, prim, bounds);
+      if (!a || !b) return;
+      mctx.beginPath();
+      mctx.moveTo(a.x, a.y);
+      mctx.lineTo(b.x, b.y);
+      mctx.stroke();
+    }
+    if (seg.kind === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      if (seg.full) {
+        mctx.beginPath();
+        mctx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        mctx.stroke();
+      } else {
+        const aInter = intersections.byId.get(seg.a.id);
+        const bInter = intersections.byId.get(seg.b.id);
+        if (!aInter || !bInter) return;
+        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
+        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        mctx.beginPath();
+        mctx.arc(prim.c.x, prim.c.y, radius, aAngle, bAngle, seg.ccw);
+        mctx.stroke();
+      }
+    }
+  });
+
+  mctx.restore();
+  const image = mctx.getImageData(0, 0, width, height);
+  const wall = new Uint8Array(width * height);
+  for (let i = 0; i < wall.length; i += 1) {
+    if (image.data[i * 4 + 3] > 0) wall[i] = 1;
+  }
+  for (let x = 0; x < width; x += 1) {
+    wall[x] = 1;
+    wall[(height - 1) * width + x] = 1;
+  }
+  for (let y = 0; y < height; y += 1) {
+    wall[y * width] = 1;
+    wall[y * width + (width - 1)] = 1;
+  }
+
+  const startX = Math.floor((seedWorld.x - originX) * scale);
+  const startY = Math.floor((seedWorld.y - originY) * scale);
+  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return { ok: false };
+  const startIdx = startY * width + startX;
+  if (wall[startIdx]) return { ok: false };
+
+  const visited = new Uint8Array(width * height);
+  const region = new Uint8Array(width * height);
+  const stack = [startIdx];
+  while (stack.length) {
+    const idx = stack.pop();
+    if (visited[idx]) continue;
+    visited[idx] = 1;
+    region[idx] = 1;
+    const x = idx % width;
+    const y = (idx - x) / width;
+    const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+    for (const n of neighbors) {
+      if (n < 0 || n >= wall.length) continue;
+      if (visited[n] || wall[n]) continue;
+      stack.push(n);
+    }
+  }
+
+  const expanded = new Uint8Array(region);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = y * width + x;
+      if (!region[idx]) continue;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const nIdx = ny * width + nx;
+          if (wall[nIdx]) expanded[nIdx] = 1;
+        }
+      }
+    }
+  }
+
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  let hasPixels = false;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = y * width + x;
+      if (!expanded[idx]) continue;
+      hasPixels = true;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (!hasPixels) return { ok: false };
+  const cropWidth = maxX - minX + 1;
+  const cropHeight = maxY - minY + 1;
+  const cropMask = new Uint8Array(cropWidth * cropHeight);
+  for (let y = 0; y < cropHeight; y += 1) {
+    for (let x = 0; x < cropWidth; x += 1) {
+      const srcIdx = (minY + y) * width + (minX + x);
+      const dstIdx = y * cropWidth + x;
+      cropMask[dstIdx] = expanded[srcIdx];
+    }
+  }
+
+  return {
+    ok: true,
+    data: {
+      origin: { x: originX + minX * pixelSize, y: originY + minY * pixelSize },
+      width: cropWidth,
+      height: cropHeight,
+      mask: cropMask,
+      pixelSize,
+    },
+  };
+}
+
+function performFill(worldPoint) {
+  if (!state.ink.length) {
+    setStatus("Ink boundaries required for fill.");
+    return false;
+  }
+
+  const bounds = getWorldBounds();
+  const raster = rasterizeFill(worldPoint, bounds);
+  if (!raster.ok) {
+    return false;
+  }
+
+  const fill = {
+    id: state.nextFillId,
+    seed: { x: worldPoint.x, y: worldPoint.y },
+    bounds: normalizeBounds(bounds),
+    color: fillColor.value,
+    alpha: fillAlpha.value,
+    boundSegIds: state.ink.map((seg) => seg.id),
+    ...raster.data,
+  };
+  fill.canvas = buildFillCanvas(fill);
+  commitHistory();
+  state.nextFillId += 1;
+  addFillRegion(fill);
+  return true;
+}
+
+function handlePointerMove(event) {
+  const rect = canvas.getBoundingClientRect();
+  const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  pointerWorld = screenToWorld(screen);
+
+  if (isPanning) {
+    const dx = screen.x - pointerStart.x;
+    const dy = screen.y - pointerStart.y;
+    view.panX = panStart.x + dx / view.scale;
+    view.panY = panStart.y + dy / view.scale;
+    panDirty = true;
+    scheduleRender();
+    return;
+  }
+
+  if (["compass", "straightedge", "copy", "paste"].includes(tool.value)) {
+    const snap = getSnapPoint(pointerWorld);
+    hoverSnap = snap;
+  } else {
+    hoverSnap = null;
+  }
+
+  scheduleRender();
+}
+
+function handlePointerDown(event) {
+  canvas.setPointerCapture(event.pointerId);
+  const rect = canvas.getBoundingClientRect();
+  const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  pointerWorld = screenToWorld(screen);
+
+  const panningIntent = spaceDown || event.button === 1;
+  if (panningIntent) {
+    isPanning = true;
+    panDirty = false;
+    panStart = { x: view.panX, y: view.panY };
+    pointerStart = { x: screen.x, y: screen.y };
+    return;
+  }
+
+  if (tool.value === "erase") {
+    const fillHit = hitTestFill(pointerWorld);
+    if (fillHit) {
+      commitHistory();
+      deleteFill(fillHit.id);
+      return;
+    }
+    const inkHit = hitTestInk(pointerWorld);
+    if (inkHit) {
+      commitHistory();
+      deleteInkSegment(inkHit.id);
+      return;
+    }
+    const primHit = hitTestPrimitive(pointerWorld);
+    if (primHit) {
+      deletePrimitive(primHit.id);
+    }
+    return;
+  }
+
+  const snap = getSnapPoint(pointerWorld);
+  const target = snap?.point || pointerWorld;
+
+  if (tool.value === "compass") {
+    if (!toolState.center) {
+      toolState.center = target;
+    } else {
+      if (dist(toolState.center, target) < 1) {
+        setStatus("Compass radius too small.");
+        toolState = { step: 0 };
+        return;
+      }
+      commitHistory();
+      const circle = {
+        id: state.nextPrimId++,
+        type: "circle",
+        c: toolState.center,
+        rp: target,
+      };
+      addPrimitive(circle);
+      toolState = { step: 0 };
+    }
+  }
+
+  if (tool.value === "straightedge") {
+    if (!toolState.anchor) {
+      toolState.anchor = target;
+    } else {
+      if (dist(toolState.anchor, target) < 1) {
+        setStatus("Straightedge needs two distinct points.");
+        toolState = { step: 0 };
+        return;
+      }
+      commitHistory();
+      const line = {
+        id: state.nextPrimId++,
+        type: "line",
+        p0: toolState.anchor,
+        p1: target,
+      };
+      addPrimitive(line);
+      toolState = { step: 0 };
+    }
+  }
+
+  if (tool.value === "ink") {
+    const hit = hitTestPrimitive(pointerWorld);
+    if (!hit) return;
+    commitHistory();
+    if (hit.type === "line") {
+      inkLineSegment(hit, pointerWorld);
+    }
+    if (hit.type === "circle") {
+      inkCircleSegment(hit, pointerWorld);
+    }
+  }
+
+  if (tool.value === "fill") {
+    performFill(pointerWorld);
+  }
+
+  if (tool.value === "copy") {
+    if (!toolState.p0) {
+      toolState.p0 = target;
+    } else {
+      commitHistory();
+      const d = dist(toolState.p0, target);
+      measureDistance.value = d;
+      toolState = { step: 0 };
+      setStatus("Measure copied.");
+    }
+  }
+
+  if (tool.value === "paste") {
+    if (!measureDistance.value) {
+      setStatus("Copy a measure first (tool 5).");
+      return;
+    }
+    if (!toolState.center) {
+      toolState.center = target;
+    } else {
+      commitHistory();
+      const angle = Math.atan2(target.y - toolState.center.y, target.x - toolState.center.x);
+      const startAngle = normalizeAngle(angle - ARC_SPAN / 2);
+      const endAngle = normalizeAngle(angle + ARC_SPAN / 2);
+      const measure = {
+        id: state.nextPrimId++,
+        type: "measure",
+        c: toolState.center,
+        rp: {
+          x: toolState.center.x + Math.cos(angle) * measureDistance.value,
+          y: toolState.center.y + Math.sin(angle) * measureDistance.value,
+        },
+        startAngle,
+        endAngle,
+      };
+      addPrimitive(measure);
+      toolState = { step: 0 };
+    }
+  }
+
+  scheduleRender();
+}
+
+function handlePointerUp(event) {
+  if (isPanning) {
+    isPanning = false;
+    if (panDirty) {
+      panDirty = false;
+      scheduleRerasterizeFills();
+    }
+  }
+}
+
+function handleWheel(event) {
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+  zoomBy(zoomFactor, screen);
+}
+
+function handleKeyDown(event) {
+  const key = event.key.toLowerCase();
+  if (event.target && ["INPUT", "TEXTAREA"].includes(event.target.tagName)) return;
+  if (event.code === "Space") {
+    spaceDown = true;
+    event.preventDefault();
+    return;
+  }
+  if (key === "escape") {
+    toolState = { step: 0 };
+    hoverSnap = null;
+    scheduleRender();
+    return;
+  }
+  if (key >= "1" && key <= "7") {
+    const def = toolDefs[Number(key) - 1];
+    if (def) setTool(def.id);
+  }
+  if (key === "z") {
+    undo();
+  }
+  if (key === "y") {
+    redo();
+  }
+  if (key === "x") {
+    commitHistory();
+    state.primitives = [];
+    state.ink = [];
+    state.fills = [];
+    recomputeIntersections();
+  }
+  if (key === "0") {
+    resetZoom();
+  }
+  if (key === "+" || key === "=") {
+    zoomBy(1.1);
+  }
+  if (key === "-") {
+    zoomBy(1 / 1.1);
+  }
+}
+
+function handleKeyUp(event) {
+  if (event.code === "Space") {
+    spaceDown = false;
+  }
+}
+
+canvas.addEventListener("pointerdown", handlePointerDown);
+canvas.addEventListener("pointermove", handlePointerMove);
+canvas.addEventListener("pointerup", handlePointerUp);
+canvas.addEventListener("pointercancel", handlePointerUp);
+canvas.addEventListener("wheel", handleWheel, { passive: false });
+window.addEventListener("keydown", handleKeyDown);
+window.addEventListener("keyup", handleKeyUp);
+window.addEventListener("resize", scheduleRender);
+
+function init() {
+  recomputeIntersections();
+  zoomValue.value = view.scale;
+  scheduleRender();
+}
+
+init();
+
+effect(() => {
+  tool.value;
+  scheduleRender();
+});
+
+effect(() => {
+  fillColor.value;
+  scheduleRender();
+});
