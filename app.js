@@ -102,6 +102,35 @@ const toolDefs = [
   { id: "erase", label: "Delete", key: "D" },
 ];
 
+function StampIcon({ shape }) {
+  const svgProps = {
+    class: "stamp-icon",
+    viewBox: "0 0 100 100",
+    "aria-hidden": "true",
+    focusable: "false",
+  };
+
+  if (shape === "square") {
+    return h("svg", svgProps, h("rect", { x: 22, y: 22, width: 56, height: 56, rx: 8, ry: 8 }));
+  }
+  if (shape === "circle") {
+    return h("svg", svgProps, h("circle", { cx: 50, cy: 50, r: 30 }));
+  }
+  if (shape === "hex") {
+    return h(
+      "svg",
+      svgProps,
+      h("polygon", {
+        points: "50 18 80 34 80 66 50 82 20 66 20 34",
+      })
+    );
+  }
+  if (shape === "triangle") {
+    return h("svg", svgProps, h("polygon", { points: "50 18 82 78 18 78" }));
+  }
+  return null;
+}
+
 function Toolbar() {
   const paletteEditInputId = "palette-edit-picker";
   const stampOptions = [
@@ -289,10 +318,12 @@ function Toolbar() {
             "button",
             {
               type: "button",
-              class: `stamp-btn ${stampShape.value === option.id ? "active" : ""}`,
+              class: `stamp-btn swatch ${stampShape.value === option.id ? "active" : ""}`,
               onClick: () => setStamp(option.id),
+              "aria-label": option.label,
+              title: option.label,
             },
-            option.label
+            h(StampIcon, { shape: option.id })
           )
         )
       ),
@@ -1935,7 +1966,7 @@ function drawPreview() {
   ctx.fillStyle = "#2b6bf3";
   const pointRadius = 3.5 / view.scale;
   const pending = toolState;
-  const snapped = hoverSnap?.point || pointerWorld;
+  const snapped = hoverSnap?.center || hoverSnap?.point || pointerWorld;
 
   if (tool.value === "compass" && pending.center) {
     drawCircle({ c: pending.center, rp: snapped }, "#2b6bf3", 1.5, true);
@@ -2496,6 +2527,32 @@ function getSnapPoint(worldPoint) {
       return { point: grid.point, distance: grid.distance, type: "grid" };
     }
   }
+
+  return best;
+}
+
+function getStampSnapPoint(worldPoint) {
+  const size = stampSize.value;
+  const shape = stampShape.value;
+  const anchors = [{ point: worldPoint, kind: "center" }];
+
+  if (shape !== "circle" && Number.isFinite(size) && size > 0) {
+    const verts = getStampVertices(worldPoint, shape, size);
+    if (verts) {
+      verts.forEach((vert) => anchors.push({ point: vert, kind: "vertex" }));
+    }
+  }
+
+  let best = null;
+  anchors.forEach((anchor) => {
+    const snap = getSnapPoint(anchor.point);
+    if (!snap) return;
+    const offset = sub(snap.point, anchor.point);
+    const center = add(worldPoint, offset);
+    if (!best || snap.distance < best.distance - EPS) {
+      best = { ...snap, center, anchor: anchor.kind };
+    }
+  });
 
   return best;
 }
@@ -3202,7 +3259,7 @@ function handlePointerMove(event) {
   }
 
   if (["compass", "straightedge", "segment", "arc", "stamp", "copy", "paste"].includes(tool.value)) {
-    const snap = getSnapPoint(pointerWorld);
+    const snap = tool.value === "stamp" ? getStampSnapPoint(pointerWorld) : getSnapPoint(pointerWorld);
     hoverSnap = snap;
   } else {
     hoverSnap = null;
@@ -3246,8 +3303,8 @@ function handlePointerDown(event) {
     return;
   }
 
-  const snap = getSnapPoint(pointerWorld);
-  const target = snap?.point || pointerWorld;
+  const snap = tool.value === "stamp" ? getStampSnapPoint(pointerWorld) : getSnapPoint(pointerWorld);
+  const target = snap?.center || snap?.point || pointerWorld;
 
   if (tool.value === "compass") {
     if (!toolState.center) {

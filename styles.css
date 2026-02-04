@@ -237,31 +237,29 @@ canvas {
 
 .stamp-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   width: 100%;
 }
 
 .stamp-btn {
-  border: 1px solid #d7e0f4;
-  border-radius: 8px;
   background: #f4f7ff;
   color: #213259;
-  font-size: 11px;
-  padding: 4px 6px;
-  cursor: pointer;
-  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  display: grid;
+  place-items: center;
 }
 
-.stamp-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 12px rgba(44, 76, 140, 0.18);
+.stamp-icon {
+  width: 62%;
+  height: 62%;
 }
 
-.stamp-btn.active {
-  background: #2b6bf3;
-  border-color: #2b6bf3;
-  color: #ffffff;
+.stamp-icon * {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .stamp-size {
