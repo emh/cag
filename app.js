@@ -35,6 +35,8 @@ const gridSettings = signal({
   size: 40,
   snap: false,
 });
+const debugPanelOpen = signal(false);
+const debugJson = signal("");
 
 const view = {
   scale: 1,
@@ -507,7 +509,69 @@ function Toolbar() {
           onClick: () => downloadPng(),
         },
         h("span", null, "Download PNG")
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "action-btn",
+          onClick: () => copyShareUrl(),
+        },
+        h("span", null, "Share")
       )
+    ),
+    h(
+      "div",
+      { class: "debug-controls" },
+      debugPanelOpen.value
+        ? h(
+            "div",
+            { class: "debug-panel" },
+            h(
+              "div",
+              { class: "debug-header" },
+              h("span", { class: "debug-title" }, "Diagram JSON"),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "debug-close",
+                  onClick: () => toggleDebugPanel(),
+                },
+                "Close"
+              )
+            ),
+            h("textarea", {
+              id: "debug-json",
+              class: "debug-textarea",
+              readOnly: true,
+              spellcheck: false,
+              value: debugJson.value,
+            }),
+            h(
+              "div",
+              { class: "debug-actions" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "debug-btn",
+                  onClick: () => refreshDebugJson(),
+                },
+                "Refresh"
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "debug-btn",
+                  onClick: () => copyDebugJson(),
+                },
+                "Copy JSON"
+              )
+            )
+          )
+        : null
     ),
     h(
       "div",
@@ -527,7 +591,7 @@ function Toolbar() {
     h(
       "div",
       { class: "hint" },
-      "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears."
+      "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears. J shows JSON."
     )
   );
 }
@@ -548,6 +612,92 @@ function setStatus(message, timeout = 1800) {
   setStatus._timer = window.setTimeout(() => {
     status.value = "";
   }, timeout);
+}
+
+function buildDebugJson() {
+  return JSON.stringify(snapshotForShare(), null, 2);
+}
+
+function buildSharePayload() {
+  return JSON.stringify(snapshotForShare());
+}
+
+function refreshDebugJson() {
+  debugJson.value = buildDebugJson();
+}
+
+function toggleDebugPanel() {
+  debugPanelOpen.value = !debugPanelOpen.value;
+  if (debugPanelOpen.value) {
+    refreshDebugJson();
+  }
+}
+
+async function copyDebugJson() {
+  if (!debugJson.value) return;
+  try {
+    await copyTextToClipboard(debugJson.value);
+    setStatus("Debug JSON copied.");
+  } catch (error) {
+    console.warn("Clipboard copy failed", error);
+    setStatus("Could not copy debug JSON.");
+  }
+}
+
+function encodeBase64Url(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(text) {
+  let base64 = text.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = base64.length % 4;
+  if (pad) {
+    base64 += "=".repeat(4 - pad);
+  }
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function buildShareUrl() {
+  const payload = encodeBase64Url(buildSharePayload());
+  const url = new URL(window.location.href);
+  url.searchParams.set("share", payload);
+  return url.toString();
+}
+
+async function copyShareUrl() {
+  try {
+    const url = buildShareUrl();
+    await copyTextToClipboard(url);
+    setStatus("Share URL copied");
+  } catch (error) {
+    console.warn("Share URL copy failed", error);
+    setStatus("Could not copy share URL.");
+  }
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.left = "-9999px";
+  area.style.top = "-9999px";
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand("copy");
+  document.body.removeChild(area);
 }
 
 function scheduleRender() {
@@ -1052,6 +1202,29 @@ function recomputeIntersections() {
   scheduleRender();
 }
 
+function snapshotForShare() {
+  return {
+    primitives: state.primitives.map((p) => ({ ...p })),
+    ink: state.ink.map((seg) => ({
+      ...seg,
+      a: seg.a ? { ...seg.a } : null,
+      b: seg.b ? { ...seg.b } : null,
+    })),
+    fills: state.fills.map((fill) => ({
+      id: fill.id,
+      seed: fill.seed ? { ...fill.seed } : null,
+      bounds: fill.bounds ? { ...fill.bounds } : null,
+      color: fill.color,
+      alpha: fill.alpha,
+      boundSegIds: fill.boundSegIds ? [...fill.boundSegIds] : [],
+    })),
+    nextPrimId: state.nextPrimId,
+    nextInkId: state.nextInkId,
+    nextFillId: state.nextFillId,
+    measureDistance: measureDistance.value,
+  };
+}
+
 function snapshot() {
   return {
     primitives: state.primitives.map((p) => ({ ...p })),
@@ -1104,6 +1277,73 @@ function restore(snap) {
   measureDistance.value = snap.measureDistance;
   recomputeIntersections();
   rerasterizeFills();
+  scheduleRender();
+}
+
+function computeNextId(items) {
+  let maxId = 0;
+  items.forEach((item) => {
+    if (item && Number.isFinite(item.id)) {
+      maxId = Math.max(maxId, item.id);
+    }
+  });
+  return maxId + 1;
+}
+
+function rebuildFillMasksFromShare() {
+  if (!state.fills.length) return;
+  const primitiveBounds = computePrimitiveBounds() || getWorldBounds();
+  const inkById = new Map(state.ink.map((seg) => [seg.id, seg]));
+  const rebuilt = [];
+  state.fills.forEach((fill) => {
+    if (!fill.seed) return;
+    const segments = fill.boundSegIds?.length
+      ? fill.boundSegIds.map((id) => inkById.get(id)).filter(Boolean)
+      : state.ink;
+    if (!segments.length) return;
+    const bounds = computeBoundsForSegments(segments, primitiveBounds);
+    if (!bounds) return;
+    const raster = rasterizeFill(fill.seed, bounds, segments);
+    if (!raster.ok) return;
+    const next = {
+      ...fill,
+      ...raster.data,
+      bounds: normalizeBounds(bounds),
+      seed: { x: fill.seed.x, y: fill.seed.y },
+    };
+    next.canvas = buildFillCanvas(next);
+    rebuilt.push(next);
+  });
+  state.fills = rebuilt;
+}
+
+function restoreShareState(snap) {
+  state.primitives = (snap.primitives || []).map((p) => ({ ...p }));
+  state.ink = (snap.ink || []).map((seg) => ({
+    ...seg,
+    a: seg.a ? { ...seg.a } : null,
+    b: seg.b ? { ...seg.b } : null,
+  }));
+  state.fills = (snap.fills || []).map((fill) => ({
+    id: fill.id,
+    seed: fill.seed ? { ...fill.seed } : null,
+    bounds: fill.bounds ? { ...fill.bounds } : null,
+    color: fill.color,
+    alpha: fill.alpha,
+    boundSegIds: fill.boundSegIds ? [...fill.boundSegIds] : [],
+  }));
+  state.nextPrimId = Number.isFinite(snap.nextPrimId)
+    ? snap.nextPrimId
+    : computeNextId(state.primitives);
+  state.nextInkId = Number.isFinite(snap.nextInkId) ? snap.nextInkId : computeNextId(state.ink);
+  state.nextFillId = Number.isFinite(snap.nextFillId)
+    ? snap.nextFillId
+    : computeNextId(state.fills);
+  measureDistance.value = snap.measureDistance ?? null;
+  history.past = [];
+  history.future = [];
+  recomputeIntersections();
+  rebuildFillMasksFromShare();
   scheduleRender();
 }
 
@@ -1177,6 +1417,81 @@ function expandBoundsArc(bounds, center, radius, startAngle, endAngle, ccw = fal
     }
   });
   return next;
+}
+
+function computePrimitiveBounds() {
+  let bounds = null;
+  state.primitives.forEach((prim) => {
+    if (prim.type === "segment") {
+      bounds = expandBounds(bounds, prim.p0);
+      bounds = expandBounds(bounds, prim.p1);
+    }
+    if (prim.type === "circle") {
+      bounds = expandBoundsCircle(bounds, prim.c, dist(prim.c, prim.rp));
+    }
+    if (prim.type === "arc" || prim.type === "measure") {
+      bounds = expandBoundsArc(bounds, prim.c, dist(prim.c, prim.rp), prim.startAngle, prim.endAngle, false);
+    }
+  });
+  return bounds;
+}
+
+function computeBoundsForSegments(segments, fallbackBounds) {
+  let bounds = null;
+  segments.forEach((seg) => {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    if (seg.kind === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      if (seg.full) {
+        bounds = expandBoundsCircle(bounds, prim.c, radius);
+      } else {
+        const aInter = intersections.byId.get(seg.a.id);
+        const bInter = intersections.byId.get(seg.b.id);
+        if (!aInter || !bInter) {
+          bounds = expandBoundsCircle(bounds, prim.c, radius);
+          return;
+        }
+        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
+        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        bounds = expandBoundsArc(bounds, prim.c, radius, aAngle, bAngle, seg.ccw);
+      }
+    }
+    if (seg.kind === "line") {
+      if (seg.a?.type === "intersection") {
+        const aInter = intersections.byId.get(seg.a.id);
+        if (aInter) bounds = expandBounds(bounds, aInter.point);
+      }
+      if (seg.b?.type === "intersection") {
+        const bInter = intersections.byId.get(seg.b.id);
+        if (bInter) bounds = expandBounds(bounds, bInter.point);
+      }
+      if (seg.a?.type === "endpoint" && prim.type === "segment") {
+        bounds = expandBounds(bounds, seg.a.which === "start" ? prim.p0 : prim.p1);
+      }
+      if (seg.b?.type === "endpoint" && prim.type === "segment") {
+        bounds = expandBounds(bounds, seg.b.which === "start" ? prim.p0 : prim.p1);
+      }
+    }
+  });
+
+  if (!bounds) {
+    if (!fallbackBounds) return null;
+    bounds = { ...fallbackBounds };
+  }
+
+  segments.forEach((seg) => {
+    if (seg.kind !== "line") return;
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    const a = resolveLineEndpoint(seg.a, prim, bounds);
+    const b = resolveLineEndpoint(seg.b, prim, bounds);
+    if (!a || !b) return;
+    bounds = expandBounds(bounds, a);
+    bounds = expandBounds(bounds, b);
+  });
+
+  return bounds;
 }
 
 function computeExportBounds(includeGuides) {
@@ -3148,6 +3463,10 @@ function handleKeyDown(event) {
     return;
   }
   if (key === "escape") {
+    if (debugPanelOpen.value) {
+      debugPanelOpen.value = false;
+      return;
+    }
     toolState = { step: 0 };
     hoverSnap = null;
     scheduleRender();
@@ -3170,6 +3489,9 @@ function handleKeyDown(event) {
     state.ink = [];
     state.fills = [];
     recomputeIntersections();
+  }
+  if (key === "j") {
+    toggleDebugPanel();
   }
   if (key === "0") {
     resetZoom();
@@ -3197,8 +3519,28 @@ window.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keyup", handleKeyUp);
 window.addEventListener("resize", scheduleRender);
 
+function loadShareFromUrl() {
+  const url = new URL(window.location.href);
+  const payload = url.searchParams.get("share");
+  if (!payload) return false;
+  try {
+    const json = decodeBase64Url(payload);
+    const data = JSON.parse(json);
+    restoreShareState(data);
+  } catch (error) {
+    console.warn("Invalid share payload", error);
+    setStatus("Invalid share URL.");
+  }
+  url.searchParams.delete("share");
+  window.history.replaceState({}, "", url.toString());
+  return true;
+}
+
 function init() {
-  recomputeIntersections();
+  const loaded = loadShareFromUrl();
+  if (!loaded) {
+    recomputeIntersections();
+  }
   zoomValue.value = view.scale;
   scheduleRender();
 }
