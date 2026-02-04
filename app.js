@@ -2411,11 +2411,16 @@ function addFillRegion(fill) {
 function rerasterizeFills() {
   if (!state.fills.length) return;
   const currentBounds = getWorldBounds();
+  const inkById = new Map(state.ink.map((seg) => [seg.id, seg]));
   const updated = state.fills.map((fill) => {
     if (!fill.seed || !fill.bounds) return fill;
     const seed = findSeedForFill(fill, currentBounds);
     if (!seed) return fill;
-    const raster = rasterizeFill(seed, currentBounds);
+    const segments = fill.boundSegIds?.length
+      ? fill.boundSegIds.map((id) => inkById.get(id)).filter(Boolean)
+      : state.ink;
+    if (!segments.length) return fill;
+    const raster = rasterizeFill(seed, currentBounds, segments);
     if (!raster.ok) return fill;
     const next = {
       ...fill,
@@ -2680,7 +2685,7 @@ function normalizeBounds(bounds) {
   };
 }
 
-function rasterizeFill(seedWorld, boundsWorld) {
+function rasterizeFill(seedWorld, boundsWorld, inkSegments = state.ink) {
   const bounds = normalizeBounds(boundsWorld);
   if (bounds.width <= EPS || bounds.height <= EPS) return { ok: false };
   let scale = getRasterScale();
@@ -2710,7 +2715,7 @@ function rasterizeFill(seedWorld, boundsWorld) {
   mctx.setLineDash([]);
   mctx.lineCap = "butt";
 
-  state.ink.forEach((seg) => {
+  inkSegments.forEach((seg) => {
     const prim = state.primitives.find((p) => p.id === seg.primId);
     if (!prim) return;
     if (seg.kind === "line") {
@@ -2845,7 +2850,7 @@ function performFill(worldPoint) {
   }
 
   const bounds = getWorldBounds();
-  const raster = rasterizeFill(worldPoint, bounds);
+  const raster = rasterizeFill(worldPoint, bounds, state.ink);
   if (!raster.ok) {
     return false;
   }
