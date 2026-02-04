@@ -27,6 +27,7 @@ const zoomValue = signal(1);
 const inkThickness = signal(2);
 const stampShape = signal("square");
 const stampSize = signal(60);
+const showGuides = signal(true);
 const gridSettings = signal({
   show: true,
   pattern: "square",
@@ -157,6 +158,11 @@ function Toolbar() {
 
   const setStamp = (shape) => {
     stampShape.value = shape;
+    scheduleRender();
+  };
+
+  const toggleGuides = (value) => {
+    showGuides.value = value;
     scheduleRender();
   };
 
@@ -488,6 +494,33 @@ function Toolbar() {
         },
         h("span", null, "Clear"),
         h("span", { class: "action-key" }, "X")
+      )
+    ),
+    h(
+      "div",
+      { class: "export-controls" },
+      h(
+        "button",
+        {
+          type: "button",
+          class: "action-btn",
+          onClick: () => downloadPng(),
+        },
+        h("span", null, "Download PNG")
+      )
+    ),
+    h(
+      "div",
+      { class: "guide-controls" },
+      h(
+        "label",
+        { class: "guide-toggle" },
+        h("input", {
+          type: "checkbox",
+          checked: showGuides.value,
+          onChange: (event) => toggleGuides(event.target.checked),
+        }),
+        "Show Guides"
       )
     ),
     h("div", { class: "status" }, status.value),
@@ -1093,6 +1126,311 @@ function redo() {
   restore(next);
 }
 
+function expandBounds(bounds, point) {
+  if (!point) return bounds;
+  if (!bounds) {
+    return { minX: point.x, maxX: point.x, minY: point.y, maxY: point.y };
+  }
+  return {
+    minX: Math.min(bounds.minX, point.x),
+    maxX: Math.max(bounds.maxX, point.x),
+    minY: Math.min(bounds.minY, point.y),
+    maxY: Math.max(bounds.maxY, point.y),
+  };
+}
+
+function expandBoundsRect(bounds, minX, minY, maxX, maxY) {
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return bounds;
+  }
+  const next = bounds ?? { minX, maxX, minY, maxY };
+  return {
+    minX: Math.min(next.minX, minX),
+    maxX: Math.max(next.maxX, maxX),
+    minY: Math.min(next.minY, minY),
+    maxY: Math.max(next.maxY, maxY),
+  };
+}
+
+function expandBoundsCircle(bounds, center, radius) {
+  return expandBoundsRect(bounds, center.x - radius, center.y - radius, center.x + radius, center.y + radius);
+}
+
+function expandBoundsArc(bounds, center, radius, startAngle, endAngle, ccw = false) {
+  const start = {
+    x: center.x + Math.cos(startAngle) * radius,
+    y: center.y + Math.sin(startAngle) * radius,
+  };
+  const end = {
+    x: center.x + Math.cos(endAngle) * radius,
+    y: center.y + Math.sin(endAngle) * radius,
+  };
+  let next = expandBounds(bounds, start);
+  next = expandBounds(next, end);
+  const cardinal = [0, Math.PI / 2, Math.PI, (Math.PI * 3) / 2];
+  cardinal.forEach((angle) => {
+    if (angleOnArc(angle, startAngle, endAngle, ccw)) {
+      next = expandBounds(next, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      });
+    }
+  });
+  return next;
+}
+
+function computeExportBounds(includeGuides) {
+  let bounds = null;
+
+  state.fills.forEach((fill) => {
+    const pixelSize = fill.pixelSize || 1;
+    const minX = fill.origin.x;
+    const minY = fill.origin.y;
+    const maxX = fill.origin.x + fill.width * pixelSize;
+    const maxY = fill.origin.y + fill.height * pixelSize;
+    bounds = expandBoundsRect(bounds, minX, minY, maxX, maxY);
+  });
+
+  if (includeGuides) {
+    state.primitives.forEach((prim) => {
+      if (prim.type === "segment") {
+        bounds = expandBounds(bounds, prim.p0);
+        bounds = expandBounds(bounds, prim.p1);
+      }
+      if (prim.type === "circle") {
+        bounds = expandBoundsCircle(bounds, prim.c, dist(prim.c, prim.rp));
+      }
+      if (prim.type === "arc" || prim.type === "measure") {
+        bounds = expandBoundsArc(bounds, prim.c, dist(prim.c, prim.rp), prim.startAngle, prim.endAngle, false);
+      }
+    });
+  }
+
+  state.ink.forEach((seg) => {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    if (seg.kind === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      if (seg.full) {
+        bounds = expandBoundsCircle(bounds, prim.c, radius);
+      } else {
+        const aInter = intersections.byId.get(seg.a.id);
+        const bInter = intersections.byId.get(seg.b.id);
+        if (!aInter || !bInter) return;
+        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
+        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        bounds = expandBoundsArc(bounds, prim.c, radius, aAngle, bAngle, seg.ccw);
+      }
+    }
+    if (seg.kind === "line") {
+      if (seg.a?.type === "intersection") {
+        const aInter = intersections.byId.get(seg.a.id);
+        if (aInter) bounds = expandBounds(bounds, aInter.point);
+      }
+      if (seg.b?.type === "intersection") {
+        const bInter = intersections.byId.get(seg.b.id);
+        if (bInter) bounds = expandBounds(bounds, bInter.point);
+      }
+      if (seg.a?.type === "endpoint" && prim.type === "segment") {
+        bounds = expandBounds(bounds, seg.a.which === "start" ? prim.p0 : prim.p1);
+      }
+      if (seg.b?.type === "endpoint" && prim.type === "segment") {
+        bounds = expandBounds(bounds, seg.b.which === "start" ? prim.p0 : prim.p1);
+      }
+    }
+  });
+
+  if (!bounds) {
+    const viewBounds = getWorldBounds();
+    bounds = {
+      minX: viewBounds.minX,
+      minY: viewBounds.minY,
+      maxX: viewBounds.maxX,
+      maxY: viewBounds.maxY,
+    };
+  }
+
+  if (includeGuides) {
+    state.primitives.forEach((prim) => {
+      if (prim.type !== "line") return;
+      const clip = clipLineToBounds(prim, bounds);
+      if (!clip) return;
+      bounds = expandBounds(bounds, clip.min);
+      bounds = expandBounds(bounds, clip.max);
+    });
+  }
+
+  state.ink.forEach((seg) => {
+    if (seg.kind !== "line") return;
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    const a = resolveLineEndpoint(seg.a, prim, bounds);
+    const b = resolveLineEndpoint(seg.b, prim, bounds);
+    if (!a || !b) return;
+    bounds = expandBounds(bounds, a);
+    bounds = expandBounds(bounds, b);
+  });
+
+  return bounds;
+}
+
+function downloadPng() {
+  const includeGuides = showGuides.value;
+  const bounds = computeExportBounds(includeGuides);
+  if (!bounds) {
+    setStatus("Nothing to export.");
+    return;
+  }
+  const margin = 20;
+  const widthWorld = Math.max(1, bounds.maxX - bounds.minX);
+  const heightWorld = Math.max(1, bounds.maxY - bounds.minY);
+  const scale = window.devicePixelRatio || 1;
+  const exportCanvas = document.createElement("canvas");
+  exportCanvas.width = Math.max(1, Math.ceil((widthWorld + margin * 2) * scale));
+  exportCanvas.height = Math.max(1, Math.ceil((heightWorld + margin * 2) * scale));
+  const ectx = exportCanvas.getContext("2d");
+  ectx.setTransform(1, 0, 0, 1, 0, 0);
+  ectx.fillStyle = "#ffffff";
+  ectx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+  const offsetX = margin - bounds.minX;
+  const offsetY = margin - bounds.minY;
+  ectx.setTransform(scale, 0, 0, scale, offsetX * scale, offsetY * scale);
+
+  ectx.save();
+  ectx.imageSmoothingEnabled = false;
+  state.fills.forEach((fill) => {
+    if (!fill.canvas) fill.canvas = buildFillCanvas(fill);
+    const pixelSize = fill.pixelSize || 1;
+    const w = fill.width * pixelSize;
+    const h = fill.height * pixelSize;
+    ectx.drawImage(fill.canvas, fill.origin.x, fill.origin.y, w, h);
+  });
+  ectx.restore();
+
+  if (includeGuides) {
+    ectx.save();
+    ectx.strokeStyle = "#8fbef8";
+    ectx.fillStyle = "#8fbef8";
+    const pointRadius = 2.5;
+    state.primitives.forEach((prim) => {
+      if (prim.type === "line") {
+        const clip = clipLineToBounds(prim, bounds);
+        if (!clip) return;
+        ectx.lineWidth = 1.2;
+        ectx.setLineDash([]);
+        ectx.beginPath();
+        ectx.moveTo(clip.min.x, clip.min.y);
+        ectx.lineTo(clip.max.x, clip.max.y);
+        ectx.stroke();
+      }
+      if (prim.type === "segment") {
+        ectx.lineWidth = 1.2;
+        ectx.setLineDash([]);
+        ectx.beginPath();
+        ectx.moveTo(prim.p0.x, prim.p0.y);
+        ectx.lineTo(prim.p1.x, prim.p1.y);
+        ectx.stroke();
+        ectx.beginPath();
+        ectx.arc(prim.p0.x, prim.p0.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+        ectx.beginPath();
+        ectx.arc(prim.p1.x, prim.p1.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+      }
+      if (prim.type === "circle") {
+        const radius = dist(prim.c, prim.rp);
+        ectx.lineWidth = 1.2;
+        ectx.setLineDash([]);
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        ectx.stroke();
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+      }
+      if (prim.type === "arc") {
+        const radius = dist(prim.c, prim.rp);
+        ectx.lineWidth = 1.2;
+        ectx.setLineDash([]);
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
+        ectx.stroke();
+        const endpoints = arcEndpoints(prim);
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+        ectx.beginPath();
+        ectx.arc(endpoints.start.x, endpoints.start.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+        ectx.beginPath();
+        ectx.arc(endpoints.end.x, endpoints.end.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+      }
+      if (prim.type === "measure") {
+        const radius = dist(prim.c, prim.rp);
+        ectx.lineWidth = 1.2;
+        ectx.setLineDash([5, 6]);
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
+        ectx.stroke();
+        ectx.setLineDash([]);
+      }
+    });
+    ectx.restore();
+
+    ectx.save();
+    ectx.fillStyle = "#2b6bf3";
+    const radius = 3;
+    intersections.list.forEach((inter) => {
+      ectx.beginPath();
+      ectx.arc(inter.point.x, inter.point.y, radius, 0, Math.PI * 2);
+      ectx.fill();
+    });
+    ectx.restore();
+  }
+
+  ectx.save();
+  ectx.strokeStyle = "#0b0b0f";
+  ectx.setLineDash([]);
+  state.ink.forEach((seg) => {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    ectx.lineWidth = seg.thickness ?? 2;
+    if (seg.kind === "line") {
+      const a = resolveLineEndpoint(seg.a, prim, bounds);
+      const b = resolveLineEndpoint(seg.b, prim, bounds);
+      if (!a || !b) return;
+      ectx.beginPath();
+      ectx.moveTo(a.x, a.y);
+      ectx.lineTo(b.x, b.y);
+      ectx.stroke();
+    }
+    if (seg.kind === "circle") {
+      const radius = dist(prim.c, prim.rp);
+      if (seg.full) {
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        ectx.stroke();
+      } else {
+        const aInter = intersections.byId.get(seg.a.id);
+        const bInter = intersections.byId.get(seg.b.id);
+        if (!aInter || !bInter) return;
+        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
+        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        ectx.beginPath();
+        ectx.arc(prim.c.x, prim.c.y, radius, aAngle, bAngle, seg.ccw);
+        ectx.stroke();
+      }
+    }
+  });
+  ectx.restore();
+
+  const link = document.createElement("a");
+  link.href = exportCanvas.toDataURL("image/png");
+  link.download = "cag-drawing.png";
+  link.click();
+}
+
 function setStrokeWidth(px) {
   ctx.lineWidth = px / view.scale;
 }
@@ -1607,55 +1945,59 @@ function draw() {
   });
   ctx.restore();
 
-  state.primitives.forEach((prim) => {
-    if (prim.type === "line") {
-      drawLine(prim, "#8fbef8", 1.2);
-    }
-    if (prim.type === "segment") {
-      drawSegment(prim, "#8fbef8", 1.2);
-      ctx.save();
-      ctx.fillStyle = "#8fbef8";
-      ctx.beginPath();
-      ctx.arc(prim.p0.x, prim.p0.y, 2.5 / view.scale, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(prim.p1.x, prim.p1.y, 2.5 / view.scale, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    if (prim.type === "circle") {
-      drawCircle(prim, "#8fbef8", 1.2);
-      ctx.save();
-      ctx.fillStyle = "#8fbef8";
-      ctx.beginPath();
-      ctx.arc(prim.c.x, prim.c.y, 2.5 / view.scale, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    if (prim.type === "arc") {
-      drawArcPrimitive(prim, "#8fbef8", 1.2, false);
-      const endpoints = arcEndpoints(prim);
-      ctx.save();
-      ctx.fillStyle = "#8fbef8";
-      ctx.beginPath();
-      ctx.arc(prim.c.x, prim.c.y, 2.5 / view.scale, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(endpoints.start.x, endpoints.start.y, 2.5 / view.scale, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(endpoints.end.x, endpoints.end.y, 2.5 / view.scale, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    if (prim.type === "measure") {
-      drawMeasure(prim, "#8fbef8", 1.2, true);
-    }
-  });
+  if (showGuides.value) {
+    state.primitives.forEach((prim) => {
+      if (prim.type === "line") {
+        drawLine(prim, "#8fbef8", 1.2);
+      }
+      if (prim.type === "segment") {
+        drawSegment(prim, "#8fbef8", 1.2);
+        ctx.save();
+        ctx.fillStyle = "#8fbef8";
+        ctx.beginPath();
+        ctx.arc(prim.p0.x, prim.p0.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(prim.p1.x, prim.p1.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      if (prim.type === "circle") {
+        drawCircle(prim, "#8fbef8", 1.2);
+        ctx.save();
+        ctx.fillStyle = "#8fbef8";
+        ctx.beginPath();
+        ctx.arc(prim.c.x, prim.c.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      if (prim.type === "arc") {
+        drawArcPrimitive(prim, "#8fbef8", 1.2, false);
+        const endpoints = arcEndpoints(prim);
+        ctx.save();
+        ctx.fillStyle = "#8fbef8";
+        ctx.beginPath();
+        ctx.arc(prim.c.x, prim.c.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(endpoints.start.x, endpoints.start.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(endpoints.end.x, endpoints.end.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      if (prim.type === "measure") {
+        drawMeasure(prim, "#8fbef8", 1.2, true);
+      }
+    });
+  }
 
   state.ink.forEach((seg) => drawInkSegment(seg));
 
-  drawIntersections();
+  if (showGuides.value) {
+    drawIntersections();
+  }
   drawPreview();
   drawSnapHighlight();
 }
@@ -2786,7 +3128,15 @@ function handleWheel(event) {
 
 function handleKeyDown(event) {
   const key = event.key.toLowerCase();
-  if (event.target && ["INPUT", "TEXTAREA"].includes(event.target.tagName)) return;
+  if (event.target) {
+    const tag = event.target.tagName;
+    if (tag === "TEXTAREA") return;
+    if (tag === "INPUT") {
+      const type = (event.target.type || "").toLowerCase();
+      const allow = ["checkbox", "range", "color", "button"].includes(type);
+      if (!allow) return;
+    }
+  }
   if (event.code === "Space") {
     spaceDown = true;
     event.preventDefault();

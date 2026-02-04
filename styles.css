@@ -204,6 +204,25 @@ canvas {
   color: #4d5a7a;
 }
 
+.guide-controls {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.guide-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #213259;
+  cursor: pointer;
+  user-select: none;
+}
+
+.guide-toggle input {
+  accent-color: #2b6bf3;
+}
+
 .stamp-controls {
   display: flex;
   flex-direction: column;
@@ -443,6 +462,12 @@ canvas {
   align-items: center;
   gap: 6px;
   margin-top: 10px;
+}
+
+.export-controls {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
 }
 
 .action-btn {
