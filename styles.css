@@ -122,6 +122,16 @@ canvas {
   min-width: 240px;
 }
 
+.menu-panel-tools {
+  min-width: 228px;
+}
+
+.menu-panel-settings {
+  min-width: 308px;
+  max-height: calc(100vh - var(--menu-bar-height) - 20px);
+  overflow-y: auto;
+}
+
 .menu-group.open .menu-panel {
   display: flex;
 }
@@ -141,6 +151,17 @@ canvas {
   gap: 8px;
   cursor: pointer;
   text-align: left;
+}
+
+.menu-action-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.menu-action-label > span:last-child {
+  white-space: nowrap;
 }
 
 .menu-action:hover,
@@ -181,6 +202,14 @@ canvas {
 
 .menu-toggle input {
   accent-color: #2b6bf3;
+}
+
+.menu-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #4d5a7a;
 }
 
 .menu-slider {
@@ -276,8 +305,12 @@ canvas {
   width: 296px;
 }
 
-.palette-window.settings-palette {
+.palette-window.fill-palette {
   width: 336px;
+}
+
+.palette-window.stamp-palette {
+  width: 296px;
 }
 
 .palette-window-header {
@@ -326,27 +359,29 @@ canvas {
   overflow-y: auto;
 }
 
-.settings-palette .controls {
+.fill-palette .controls {
+  margin-top: 0;
+}
+
+.stamp-palette .stamp-controls {
   margin-top: 0;
 }
 
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
 }
 
 .tool-btn {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1 / 1;
   border: 1px solid #d7e0f4;
   border-radius: 10px;
-  padding: 6px 8px;
+  padding: 0;
   background: #f4f7ff;
   color: #213259;
-  font-size: 12px;
   cursor: pointer;
   transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
@@ -363,10 +398,20 @@ canvas {
   box-shadow: 0 10px 22px rgba(43, 107, 243, 0.35);
 }
 
-.tool-btn .key {
-  font-weight: 600;
-  font-size: 11px;
-  opacity: 0.7;
+.tool-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.tool-btn .tool-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.menu-action-label .tool-icon {
+  width: 15px;
+  height: 15px;
 }
 
 .controls {
@@ -382,6 +427,10 @@ canvas {
   grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   width: 100%;
+}
+
+.menu-panel-settings .palette {
+  grid-template-columns: repeat(6, 1fr);
 }
 
 .swatch {
@@ -558,6 +607,90 @@ canvas {
   cursor: pointer;
 }
 
+.info-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 64px 12px 12px;
+  background: rgba(11, 20, 39, 0.42);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+  z-index: 520;
+}
+
+.info-popup {
+  width: min(500px, calc(100vw - 24px));
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 34px rgba(16, 31, 62, 0.24);
+  color: #213259;
+  padding: 14px;
+}
+
+.info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.info-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #122950;
+}
+
+.info-close {
+  width: 26px;
+  height: 26px;
+  border: 1px solid #d7e0f4;
+  border-radius: 9px;
+  background: #eef3ff;
+  color: #213259;
+  font-size: 17px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.info-close:hover {
+  background: #e2e9ff;
+}
+
+.info-text {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #2f426a;
+}
+
+.info-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.info-btn {
+  border: 1px solid #2b6bf3;
+  border-radius: 8px;
+  background: #2b6bf3;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.info-btn:hover {
+  background: #245cd1;
+  border-color: #245cd1;
+}
+
 .hud-info {
   position: absolute;
   left: 12px;
@@ -654,6 +787,11 @@ canvas {
   font-size: 12px;
   font-weight: 600;
   color: #213259;
+}
+
+.menu-panel-settings .thickness-controls,
+.menu-panel-settings .alpha-controls {
+  margin-top: 0;
 }
 
 .grid-controls {
@@ -760,19 +898,28 @@ canvas {
   opacity: 0.7;
 }
 
-.hint {
-  margin-top: 6px;
-  font-size: 11px;
-  color: #6b7896;
-  line-height: 1.35;
-}
-
 @media (max-width: 640px) {
+  .info-overlay {
+    padding-top: 56px;
+  }
+
+  .info-popup {
+    padding: 12px;
+  }
+
+  .info-title {
+    font-size: 16px;
+  }
+
   .palette-window.tool-palette {
     width: 228px;
   }
 
-  .palette-window.settings-palette {
+  .palette-window.fill-palette {
+    width: 252px;
+  }
+
+  .palette-window.stamp-palette {
     width: 252px;
   }
 
@@ -780,8 +927,16 @@ canvas {
     padding: 10px 11px;
   }
 
+  .menu-panel-settings {
+    min-width: 250px;
+  }
+
+  .menu-panel-settings .palette {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
   .tool-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(4, 1fr);
   }
 
   .palette {

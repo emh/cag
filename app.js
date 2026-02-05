@@ -1,8 +1,22 @@
 import { h, render } from "preact";
 import { signal, effect } from "@preact/signals";
+import {
+  Brush,
+  Circle,
+  Eraser,
+  Minus,
+  PaintBucket,
+  PencilRuler,
+  Ruler,
+  RulerDimensionLine,
+  Spline,
+  Stamp,
+} from "https://cdn.jsdelivr.net/npm/lucide-preact@0.563.0/+esm";
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+const APP_TITLE = "Computer Aided Geometry";
+document.title = APP_TITLE;
 
 const tool = signal("straightedge");
 const palette = signal([
@@ -36,10 +50,13 @@ const gridSettings = signal({
   snap: false,
 });
 const openMenu = signal(null);
+const showInfoDialog = signal(true);
 const showToolPalette = signal(true);
-const showSettingsPalette = signal(true);
+const showFillPalette = signal(false);
+const showStampPalette = signal(false);
 const toolPalettePosition = signal({ x: 12, y: 58 });
-const settingsPalettePosition = signal({ x: 324, y: 58 });
+const fillPalettePosition = signal({ x: 324, y: 58 });
+const stampPalettePosition = signal({ x: 632, y: 58 });
 
 const view = {
   scale: 1,
@@ -95,21 +112,32 @@ const GRID_DOT_COLOR = "rgba(15, 23, 42, 0.12)";
 const PALETTE_GUTTER = 8;
 
 const toolDefs = [
-  { id: "straightedge", label: "Straightedge", key: "1" },
-  { id: "segment", label: "Line Segment", key: "2" },
-  { id: "compass", label: "Circle", key: "3" },
-  { id: "arc", label: "Arc", key: "4" },
-  { id: "ink", label: "Ink", key: "5" },
-  { id: "fill", label: "Fill", key: "6" },
-  { id: "stamp", label: "Stamp", key: "7" },
-  { id: "copy", label: "Copy Measure", key: "8" },
-  { id: "paste", label: "Paste Measure", key: "9" },
-  { id: "erase", label: "Delete", key: "D" },
+  { id: "straightedge", label: "Straightedge", key: "1", Icon: Ruler },
+  { id: "segment", label: "Line Segment", key: "2", Icon: Minus },
+  { id: "compass", label: "Circle", key: "3", Icon: Circle },
+  { id: "arc", label: "Arc", key: "4", Icon: Spline },
+  { id: "ink", label: "Ink", key: "5", Icon: Brush },
+  { id: "fill", label: "Fill", key: "6", Icon: PaintBucket },
+  { id: "stamp", label: "Stamp", key: "7", Icon: Stamp },
+  { id: "copy", label: "Copy Measure", key: "8", Icon: RulerDimensionLine },
+  { id: "paste", label: "Paste Measure", key: "9", Icon: PencilRuler },
+  { id: "erase", label: "Delete", key: "D", Icon: Eraser },
 ];
+
+function ToolIcon({ Icon, size = 18, className = "tool-icon" }) {
+  return h(Icon, {
+    size,
+    strokeWidth: 2,
+    className,
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+}
 
 function getPalettePositionSignal(paletteId) {
   if (paletteId === "tools") return toolPalettePosition;
-  if (paletteId === "settings") return settingsPalettePosition;
+  if (paletteId === "fill-colors") return fillPalettePosition;
+  if (paletteId === "stamp") return stampPalettePosition;
   return null;
 }
 
@@ -253,8 +281,20 @@ function Toolbar() {
     showToolPalette.value = value;
   };
 
-  const toggleSettingsPalette = (value) => {
-    showSettingsPalette.value = value;
+  const toggleFillPalette = (value) => {
+    showFillPalette.value = value;
+  };
+
+  const toggleStampPalette = (value) => {
+    showStampPalette.value = value;
+  };
+
+  const openInfoDialog = () => {
+    showInfoDialog.value = true;
+  };
+
+  const closeInfoDialog = () => {
+    showInfoDialog.value = false;
   };
 
   const openHoverMenu = (menuId) => {
@@ -289,6 +329,163 @@ function Toolbar() {
     input.style.height = "1px";
     input.style.pointerEvents = "none";
   };
+
+  const setStampSizeValue = (value) => {
+    stampSize.value = Number(value);
+    scheduleRender();
+  };
+
+  const setInkThicknessValue = (value) => {
+    inkThickness.value = Number(value);
+    scheduleRender();
+  };
+
+  const setFillAlphaValue = (value) => {
+    fillAlpha.value = Number(value);
+  };
+
+  const renderFillColorGrid = ({ editable = false, editInputId = "" } = {}) =>
+    h(
+      "div",
+      { class: "palette" },
+      palette.value.map((color, index) => {
+        const buttonProps = {
+          type: "button",
+          class: `swatch ${fillColor.value === color ? "active" : ""}`,
+          style: { backgroundColor: color },
+          onClick: () => setFillColor(color),
+        };
+        if (editable && editInputId) {
+          buttonProps.onDblClick = (event) => {
+            const input = document.getElementById(editInputId);
+            if (!input) return;
+            paletteEditIndex = index;
+            input.value = color;
+            positionEditPicker(event, input);
+            if (input.showPicker) {
+              input.showPicker();
+            } else {
+              input.click();
+            }
+          };
+        }
+        return h(
+          "button",
+          buttonProps,
+          h(
+            "span",
+            {
+              class: "swatch-remove",
+              onClick: (event) => {
+                event.stopPropagation();
+                removePaletteColor(color);
+              },
+            },
+            "×"
+          )
+        );
+      }),
+      h(
+        "div",
+        { class: "swatch add" },
+        h("span", { class: "swatch-add-label" }, "+"),
+        h("input", {
+          class: "palette-input",
+          type: "color",
+          onChange: (event) => {
+            addPaletteColor(event.target.value);
+            event.target.blur();
+          },
+        })
+      ),
+      editable && editInputId
+        ? h("input", {
+            id: editInputId,
+            class: "palette-input edit",
+            type: "color",
+            onChange: (event) => {
+              updatePaletteColor(event.target.value, paletteEditIndex);
+              paletteEditIndex = null;
+              resetEditPicker(event.target);
+              event.target.blur();
+            },
+            onBlur: (event) => {
+              paletteEditIndex = null;
+              resetEditPicker(event.target);
+            },
+          })
+        : null
+    );
+
+  const renderStampControls = () =>
+    h(
+      "div",
+      { class: "stamp-controls" },
+      h("span", { class: "stamp-label" }, "Stamp"),
+      h(
+        "div",
+        { class: "stamp-grid" },
+        stampOptions.map((option) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `stamp-btn swatch ${stampShape.value === option.id ? "active" : ""}`,
+              onClick: () => setStamp(option.id),
+              "aria-label": option.label,
+              title: option.label,
+            },
+            h(StampIcon, { shape: option.id })
+          )
+        )
+      ),
+      h(
+        "div",
+        { class: "stamp-size" },
+        h("span", { class: "stamp-size-label" }, "Size"),
+        h("input", {
+          type: "range",
+          min: 10,
+          max: 200,
+          step: 5,
+          value: stampSize.value,
+          onInput: (event) => setStampSizeValue(event.target.value),
+        }),
+        h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
+      )
+    );
+
+  const renderInkThicknessControl = () =>
+    h(
+      "div",
+      { class: "thickness-controls" },
+      h("span", { class: "thickness-label" }, "Ink"),
+      h("input", {
+        type: "range",
+        min: 1,
+        max: 8,
+        step: 0.5,
+        value: inkThickness.value,
+        onInput: (event) => setInkThicknessValue(event.target.value),
+      }),
+      h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
+    );
+
+  const renderFillAlphaControl = () =>
+    h(
+      "div",
+      { class: "alpha-controls" },
+      h("span", { class: "alpha-label" }, "Fill Alpha"),
+      h("input", {
+        type: "range",
+        min: 0,
+        max: 1,
+        step: 0.05,
+        value: fillAlpha.value,
+        onInput: (event) => setFillAlphaValue(event.target.value),
+      }),
+      h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
+    );
 
   const renderPaletteWindow = ({ id, title, className, position, onClose, children }) =>
     h(
@@ -356,6 +553,16 @@ function Toolbar() {
               onClick: () => runMenuAction(() => copyShareUrl()),
             },
             h("span", null, "Share")
+          ),
+          h("div", { class: "menu-divider" }),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "menu-action",
+              onClick: () => runMenuAction(() => openInfoDialog()),
+            },
+            h("span", null, "Info")
           )
         )
       ),
@@ -388,6 +595,59 @@ function Toolbar() {
             h("span", null, "Clear"),
             h("span", { class: "menu-shortcut" }, "X")
           )
+        )
+      ),
+      h(
+        "div",
+        {
+          class: `menu-group ${openMenu.value === "tool" ? "open" : ""}`,
+          onMouseEnter: () => openHoverMenu("tool"),
+          onMouseLeave: () => closeHoverMenu("tool"),
+        },
+        h("div", { class: "menu-trigger" }, "Tool"),
+        h(
+          "div",
+          { class: "menu-panel menu-panel-tools" },
+          toolDefs.map((def) =>
+            h(
+              "button",
+              {
+                type: "button",
+                class: `menu-action ${tool.value === def.id ? "selected" : ""}`,
+                onClick: () => runMenuAction(() => setTool(def.id)),
+                title: def.label,
+              },
+              h(
+                "span",
+                { class: "menu-action-label" },
+                h(ToolIcon, { Icon: def.Icon, size: 15 }),
+                h("span", null, def.label)
+              ),
+              h("span", { class: "menu-shortcut" }, def.key)
+            )
+          )
+        )
+      ),
+      h(
+        "div",
+        {
+          class: `menu-group ${openMenu.value === "settings" ? "open" : ""}`,
+          onMouseEnter: () => openHoverMenu("settings"),
+          onMouseLeave: () => closeHoverMenu("settings"),
+        },
+        h("div", { class: "menu-trigger" }, "Settings"),
+        h(
+          "div",
+          { class: "menu-panel menu-panel-settings" },
+          h("div", { class: "menu-section-label" }, "Fill Colors"),
+          renderFillColorGrid(),
+          h("div", { class: "menu-divider" }),
+          h("div", { class: "menu-section-label" }, "Stamp"),
+          renderStampControls(),
+          h("div", { class: "menu-divider" }),
+          renderInkThicknessControl(),
+          h("div", { class: "menu-divider" }),
+          renderFillAlphaControl()
         )
       ),
       h(
@@ -530,10 +790,20 @@ function Toolbar() {
             { class: "menu-toggle" },
             h("input", {
               type: "checkbox",
-              checked: showSettingsPalette.value,
-              onChange: (event) => toggleSettingsPalette(event.target.checked),
+              checked: showFillPalette.value,
+              onChange: (event) => toggleFillPalette(event.target.checked),
             }),
-            "Settings Palette"
+            "Fill Colors Palette"
+          ),
+          h(
+            "label",
+            { class: "menu-toggle" },
+            h("input", {
+              type: "checkbox",
+              checked: showStampPalette.value,
+              onChange: (event) => toggleStampPalette(event.target.checked),
+            }),
+            "Stamp Palette"
           ),
           h(
             "label",
@@ -606,177 +876,107 @@ function Toolbar() {
                   type: "button",
                   class: `tool-btn ${tool.value === def.id ? "active" : ""}`,
                   onClick: () => setTool(def.id),
+                  title: `${def.label} (${def.key})`,
+                  "aria-label": `${def.label} (${def.key})`,
                 },
-                h("span", null, def.label),
-                h("span", { class: "key" }, def.key)
+                h(ToolIcon, { Icon: def.Icon, size: 20 })
               )
             )
           ),
         })
       : null,
-    showSettingsPalette.value
+    showFillPalette.value
       ? renderPaletteWindow({
-          id: "settings",
-          title: "Tool Settings",
-          className: "settings-palette",
-          position: settingsPalettePosition.value,
-          onClose: () => toggleSettingsPalette(false),
-          children: [
-            h(
-              "div",
-              { class: "controls" },
-              h("label", null, "Fill Color"),
-              h(
-                "div",
-                { class: "palette" },
-                palette.value.map((color, index) =>
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      class: `swatch ${fillColor.value === color ? "active" : ""}`,
-                      style: { backgroundColor: color },
-                      onClick: () => setFillColor(color),
-                      onDblClick: (event) => {
-                        const input = document.getElementById(paletteEditInputId);
-                        if (!input) return;
-                        paletteEditIndex = index;
-                        input.value = color;
-                        positionEditPicker(event, input);
-                        if (input.showPicker) {
-                          input.showPicker();
-                        } else {
-                          input.click();
-                        }
-                      },
-                    },
-                    h(
-                      "span",
-                      {
-                        class: "swatch-remove",
-                        onClick: (event) => {
-                          event.stopPropagation();
-                          removePaletteColor(color);
-                        },
-                      },
-                      "×"
-                    )
-                  )
-                ),
-                h(
-                  "div",
-                  { class: "swatch add" },
-                  h("span", { class: "swatch-add-label" }, "+"),
-                  h("input", {
-                    class: "palette-input",
-                    type: "color",
-                    onChange: (event) => {
-                      addPaletteColor(event.target.value);
-                      event.target.blur();
-                    },
-                  })
-                ),
-                h("input", {
-                  id: paletteEditInputId,
-                  class: "palette-input edit",
-                  type: "color",
-                  onChange: (event) => {
-                    updatePaletteColor(event.target.value, paletteEditIndex);
-                    paletteEditIndex = null;
-                    resetEditPicker(event.target);
-                    event.target.blur();
-                  },
-                  onBlur: (event) => {
-                    paletteEditIndex = null;
-                    resetEditPicker(event.target);
-                  },
-                })
-              )
-            ),
-            h(
-              "div",
-              { class: "stamp-controls" },
-              h("span", { class: "stamp-label" }, "Stamp"),
-              h(
-                "div",
-                { class: "stamp-grid" },
-                stampOptions.map((option) =>
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      class: `stamp-btn swatch ${stampShape.value === option.id ? "active" : ""}`,
-                      onClick: () => setStamp(option.id),
-                      "aria-label": option.label,
-                      title: option.label,
-                    },
-                    h(StampIcon, { shape: option.id })
-                  )
-                )
-              ),
-              h(
-                "div",
-                { class: "stamp-size" },
-                h("span", { class: "stamp-size-label" }, "Size"),
-                h("input", {
-                  type: "range",
-                  min: 10,
-                  max: 200,
-                  step: 5,
-                  value: stampSize.value,
-                  onInput: (event) => {
-                    stampSize.value = Number(event.target.value);
-                    scheduleRender();
-                  },
-                }),
-                h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
-              )
-            ),
-            h(
-              "div",
-              { class: "thickness-controls" },
-              h("span", { class: "thickness-label" }, "Ink"),
-              h("input", {
-                type: "range",
-                min: 1,
-                max: 8,
-                step: 0.5,
-                value: inkThickness.value,
-                onInput: (event) => {
-                  inkThickness.value = Number(event.target.value);
-                  scheduleRender();
-                },
-              }),
-              h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
-            ),
-            h(
-              "div",
-              { class: "alpha-controls" },
-              h("span", { class: "alpha-label" }, "Fill Alpha"),
-              h("input", {
-                type: "range",
-                min: 0,
-                max: 1,
-                step: 0.05,
-                value: fillAlpha.value,
-                onInput: (event) => {
-                  fillAlpha.value = Number(event.target.value);
-                },
-              }),
-              h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
-            )
-          ],
+          id: "fill-colors",
+          title: "Fill Colors",
+          className: "fill-palette",
+          position: fillPalettePosition.value,
+          onClose: () => toggleFillPalette(false),
+          children: h(
+            "div",
+            { class: "controls" },
+            h("label", null, "Fill Colors"),
+            renderFillColorGrid({ editable: true, editInputId: paletteEditInputId })
+          ),
         })
+      : null,
+    showStampPalette.value
+      ? renderPaletteWindow({
+          id: "stamp",
+          title: "Stamp",
+          className: "stamp-palette",
+          position: stampPalettePosition.value,
+          onClose: () => toggleStampPalette(false),
+          children: renderStampControls(),
+        })
+      : null,
+    showInfoDialog.value
+      ? h(
+          "div",
+          {
+            class: "info-overlay",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-labelledby": "info-title",
+            onPointerDown: (event) => {
+              if (event.target === event.currentTarget) {
+                closeInfoDialog();
+              }
+            },
+          },
+          h(
+            "div",
+            { class: "info-popup" },
+            h(
+              "div",
+              { class: "info-header" },
+              h("h2", { id: "info-title", class: "info-title" }, APP_TITLE),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "info-close",
+                  onClick: () => closeInfoDialog(),
+                  "aria-label": "Close info",
+                },
+                "×"
+              )
+            ),
+            h(
+              "p",
+              { class: "info-text" },
+              "Draw lines and circles, ink the segments and arcs between intersections, and add color to the areas surrounded by ink."
+            ),
+            h(
+              "p",
+              { class: "info-text" },
+              "Use Tool menu or keys 1-9 and D to switch tools. Click to place points and snap to intersections."
+            ),
+            h(
+              "p",
+              { class: "info-text" },
+              "Space or middle-drag pans. Wheel zooms. Z/Y undo-redo. X clears. +/- zoom. 0 resets zoom."
+            ),
+            h(
+              "div",
+              { class: "info-actions" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "info-btn",
+                  onClick: () => closeInfoDialog(),
+                },
+                "Start"
+              )
+            )
+          )
+        )
       : null,
     h(
       "div",
       { class: "hud-info" },
-      h("div", { class: "status" }, status.value),
-      h(
-        "div",
-        { class: "hint" },
-        "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears. +/- zoom. 0 resets zoom."
-      )
+      h("div", { class: "status" }, status.value)
     )
   );
 }
