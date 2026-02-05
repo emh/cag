@@ -7,6 +7,8 @@ import {
   Minus,
   PaintBucket,
   PencilRuler,
+  RotateCcw,
+  RotateCw,
   Ruler,
   RulerDimensionLine,
   Spline,
@@ -18,6 +20,13 @@ const ctx = canvas.getContext("2d");
 const APP_TITLE = "Computer Aided Geometry";
 const DEFAULT_DRAWING_FILE_NAME = "cag-drawing.json";
 document.title = APP_TITLE;
+
+function shouldHideToolPaletteByDefault() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(max-width: 768px), (pointer: coarse)").matches;
+}
 
 const tool = signal("straightedge");
 const palette = signal([
@@ -54,7 +63,7 @@ const openMenu = signal(null);
 const showInfoDialog = signal(true);
 const showSaveDialog = signal(false);
 const saveDialogFileName = signal(DEFAULT_DRAWING_FILE_NAME);
-const showToolPalette = signal(true);
+const showToolPalette = signal(!shouldHideToolPaletteByDefault());
 const showFillPalette = signal(false);
 const showStampPalette = signal(false);
 const toolPalettePosition = signal({ x: 12, y: 58 });
@@ -106,6 +115,10 @@ let panDirty = false;
 let paletteEditIndex = null;
 let draggingPalette = null;
 let currentDrawingFileName = DEFAULT_DRAWING_FILE_NAME;
+const activeTouchPoints = new Map();
+let touchTapCandidate = null;
+let touchGesture = null;
+let touchDrawGesture = null;
 
 const history = {
   past: [],
@@ -123,6 +136,7 @@ const MAX_FILL_DIM = 8192;
 const GRID_COLOR = "rgba(15, 23, 42, 0.08)";
 const GRID_DOT_COLOR = "rgba(15, 23, 42, 0.12)";
 const PALETTE_GUTTER = 8;
+const TOUCH_TAP_SLOP_PX = 10;
 
 const toolDefs = [
   { id: "straightedge", label: "Straightedge", key: "1", Icon: Ruler },
@@ -136,6 +150,9 @@ const toolDefs = [
   { id: "paste", label: "Paste Measure", key: "9", Icon: PencilRuler },
   { id: "erase", label: "Delete", key: "D", Icon: Eraser },
 ];
+
+const mobileFooterToolIds = ["straightedge", "segment", "compass", "arc", "ink", "fill"];
+const toolDefsById = new Map(toolDefs.map((def) => [def.id, def]));
 
 const TOOL_MENU_HELP = {
   straightedge: "Draws an infinite line through two selected points.",
@@ -1304,6 +1321,47 @@ function Toolbar() {
           )
         )
       : null,
+    h(
+      "div",
+      { class: "mobile-footer-toolbar", role: "toolbar", "aria-label": "Mobile actions" },
+      h(
+        "button",
+        {
+          type: "button",
+          class: "mobile-footer-btn",
+          onClick: () => undo(),
+          title: "Undo",
+          "aria-label": "Undo",
+        },
+        h(ToolIcon, { Icon: RotateCcw, size: 18 })
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "mobile-footer-btn",
+          onClick: () => redo(),
+          title: "Redo",
+          "aria-label": "Redo",
+        },
+        h(ToolIcon, { Icon: RotateCw, size: 18 })
+      ),
+      mobileFooterToolIds.map((toolId) => {
+        const def = toolDefsById.get(toolId);
+        if (!def) return null;
+        return h(
+          "button",
+          {
+            type: "button",
+            class: `mobile-footer-btn ${tool.value === def.id ? "active" : ""}`,
+            onClick: () => setTool(def.id),
+            title: def.label,
+            "aria-label": def.label,
+          },
+          h(ToolIcon, { Icon: def.Icon, size: 18 })
+        );
+      })
+    ),
     h(
       "div",
       { class: "hud-info" },
@@ -2806,6 +2864,21 @@ function drawPreview() {
     ctx.beginPath();
     ctx.arc(pending.center.x, pending.center.y, pointRadius, 0, Math.PI * 2);
     ctx.fill();
+    if (!pending.start) {
+      if (touchDrawGesture?.kind === "arc-radius") {
+        drawCircle({ c: pending.center, rp: snapped }, "#2b6bf3", 1.5, true);
+      } else if (Number.isFinite(pending.radius) && pending.radius > 0) {
+        drawCircle(
+          {
+            c: pending.center,
+            rp: { x: pending.center.x + pending.radius, y: pending.center.y },
+          },
+          "#8fbef8",
+          1.2,
+          true
+        );
+      }
+    }
     if (pending.start) {
       const radius = pending.radius ?? dist(pending.center, pending.start);
       const angles = computeArcAngles(pending.center, pending.start, snapped, radius);
@@ -4117,46 +4190,297 @@ function performFill(worldPoint) {
   return true;
 }
 
-function handlePointerMove(event) {
+function getPointerScreenPosition(event) {
   const rect = canvas.getBoundingClientRect();
-  const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  pointerWorld = screenToWorld(screen);
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
 
-  if (isPanning) {
-    const dx = screen.x - pointerStart.x;
-    const dy = screen.y - pointerStart.y;
-    view.panX = panStart.x + dx / view.scale;
-    view.panY = panStart.y + dy / view.scale;
-    panDirty = true;
-    scheduleRender();
-    return;
-  }
+function getTouchGesturePoints() {
+  if (!touchGesture) return null;
+  const first = activeTouchPoints.get(touchGesture.idA);
+  const second = activeTouchPoints.get(touchGesture.idB);
+  if (!first || !second) return null;
+  return [first, second];
+}
 
-  if (["compass", "straightedge", "segment", "arc", "stamp", "copy", "paste"].includes(tool.value)) {
-    const snap = tool.value === "stamp" ? getStampSnapPoint(pointerWorld) : getSnapPoint(pointerWorld);
-    hoverSnap = snap;
+function getActionSnap(toolId, worldPoint) {
+  return toolId === "stamp" ? getStampSnapPoint(worldPoint) : getSnapPoint(worldPoint);
+}
+
+function getActionTarget(toolId, worldPoint) {
+  const snap = getActionSnap(toolId, worldPoint);
+  return {
+    snap,
+    target: snap?.center || snap?.point || worldPoint,
+  };
+}
+
+function isTouchDragConstructionTool(toolId) {
+  return (
+    toolId === "straightedge" ||
+    toolId === "segment" ||
+    toolId === "compass" ||
+    toolId === "arc" ||
+    toolId === "copy"
+  );
+}
+
+function clearTouchDrawGesture(gesture) {
+  if (gesture?.kind === "arc-start-end") {
+    toolState = { step: 0, center: gesture.center, radius: gesture.radius };
   } else {
-    hoverSnap = null;
+    toolState = { step: 0 };
   }
-
+  hoverSnap = null;
+  bumpToolHelpTick();
   scheduleRender();
 }
 
-function handlePointerDown(event) {
-  canvas.setPointerCapture(event.pointerId);
-  const rect = canvas.getBoundingClientRect();
-  const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  pointerWorld = screenToWorld(screen);
+function cancelTouchDrawGesture() {
+  if (!touchDrawGesture) return false;
+  const gesture = touchDrawGesture;
+  touchDrawGesture = null;
+  clearTouchDrawGesture(gesture);
+  return true;
+}
 
-  const panningIntent = spaceDown || event.button === 1;
-  if (panningIntent) {
-    isPanning = true;
-    panDirty = false;
-    panStart = { x: view.panX, y: view.panY };
-    pointerStart = { x: screen.x, y: screen.y };
-    return;
+function beginTouchDrawGesture(pointerId) {
+  const toolId = tool.value;
+  if (!isTouchDragConstructionTool(toolId)) return false;
+
+  const { snap, target } = getActionTarget(toolId, pointerWorld);
+
+  if (toolId === "straightedge" || toolId === "segment") {
+    touchDrawGesture = {
+      id: pointerId,
+      kind: toolId,
+      toolId,
+      start: target,
+    };
+    toolState = { step: 0, anchor: target };
+  } else if (toolId === "compass") {
+    touchDrawGesture = {
+      id: pointerId,
+      kind: "compass",
+      toolId,
+      center: target,
+    };
+    toolState = { step: 0, center: target };
+  } else if (toolId === "arc") {
+    const arcCenter = toolState.center;
+    const arcRadius = Number.isFinite(toolState.radius) ? toolState.radius : null;
+    if (arcCenter && arcRadius && arcRadius > 0) {
+      const start = projectToRadius(arcCenter, target, arcRadius).point;
+      touchDrawGesture = {
+        id: pointerId,
+        kind: "arc-start-end",
+        toolId,
+        center: arcCenter,
+        radius: arcRadius,
+        start,
+      };
+      toolState = { step: 0, center: arcCenter, radius: arcRadius, start };
+    } else {
+      touchDrawGesture = {
+        id: pointerId,
+        kind: "arc-radius",
+        toolId,
+        center: target,
+      };
+      toolState = { step: 0, center: target };
+    }
+  } else if (toolId === "copy") {
+    touchDrawGesture = {
+      id: pointerId,
+      kind: "copy",
+      toolId,
+      start: target,
+    };
+    toolState = { step: 0, p0: target };
   }
 
+  touchTapCandidate = null;
+  hoverSnap = snap;
+  bumpToolHelpTick();
+  scheduleRender();
+  return true;
+}
+
+function finalizeTouchDrawGesture(pointerId, worldPoint, canceled = false) {
+  if (!touchDrawGesture || touchDrawGesture.id !== pointerId) return false;
+
+  const gesture = touchDrawGesture;
+  touchDrawGesture = null;
+
+  if (canceled) {
+    clearTouchDrawGesture(gesture);
+    return true;
+  }
+
+  const { target } = getActionTarget(gesture.toolId, worldPoint);
+  hoverSnap = null;
+
+  if (gesture.kind === "straightedge") {
+    if (dist(gesture.start, target) < 1) {
+      setStatus("Straightedge needs two distinct points.");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "line",
+      p0: gesture.start,
+      p1: target,
+    });
+    toolState = { step: 0 };
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "segment") {
+    if (dist(gesture.start, target) < 1) {
+      setStatus("Line segment needs two distinct points.");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "segment",
+      p0: gesture.start,
+      p1: target,
+    });
+    toolState = { step: 0 };
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "compass") {
+    if (dist(gesture.center, target) < 1) {
+      setStatus("Compass radius too small.");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "circle",
+      c: gesture.center,
+      rp: target,
+    });
+    toolState = { step: 0 };
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "arc-radius") {
+    const radius = dist(gesture.center, target);
+    if (radius < 1) {
+      setStatus("Arc radius too small.");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    toolState = { step: 0, center: gesture.center, radius };
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "arc-start-end") {
+    const radius = gesture.radius ?? dist(gesture.center, gesture.start);
+    if (radius < 1) {
+      setStatus("Arc radius too small.");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    const angles = computeArcAngles(gesture.center, gesture.start, target, radius);
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "arc",
+      c: gesture.center,
+      rp: angles.startPoint,
+      startAngle: angles.startAngle,
+      endAngle: angles.endAngle,
+    });
+    toolState = { step: 0 };
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "copy") {
+    commitHistory();
+    const d = dist(gesture.start, target);
+    measureDistance.value = d;
+    toolState = { step: 0 };
+    setStatus("Measure copied.");
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  toolState = { step: 0 };
+  bumpToolHelpTick();
+  scheduleRender();
+  return true;
+}
+
+function beginTouchGesture() {
+  const points = Array.from(activeTouchPoints.values());
+  if (points.length < 2) return false;
+  cancelTouchDrawGesture();
+  const [a, b] = points;
+  const midpoint = {
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  };
+  touchGesture = {
+    idA: a.id,
+    idB: b.id,
+    startScale: view.scale,
+    startDistance: Math.max(1, dist(a, b)),
+    anchorWorld: screenToWorld(midpoint),
+  };
+  touchTapCandidate = null;
+  hoverSnap = null;
+  return true;
+}
+
+function updateTouchGesture() {
+  const points = getTouchGesturePoints();
+  if (!points || !touchGesture) return false;
+  const [a, b] = points;
+  const midpoint = {
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  };
+  const distance = Math.max(1, dist(a, b));
+  const scaleFactor = distance / touchGesture.startDistance;
+  view.scale = clampScale(touchGesture.startScale * scaleFactor);
+  view.panX = midpoint.x / view.scale - touchGesture.anchorWorld.x;
+  view.panY = midpoint.y / view.scale - touchGesture.anchorWorld.y;
+  zoomValue.value = view.scale;
+  panDirty = true;
+  scheduleRender();
+  return true;
+}
+
+function handlePrimaryPointerAction() {
   if (tool.value === "erase") {
     const fillHit = hitTestFill(pointerWorld);
     if (fillHit) {
@@ -4177,8 +4501,7 @@ function handlePointerDown(event) {
     return;
   }
 
-  const snap = tool.value === "stamp" ? getStampSnapPoint(pointerWorld) : getSnapPoint(pointerWorld);
-  const target = snap?.center || snap?.point || pointerWorld;
+  const { target } = getActionTarget(tool.value, pointerWorld);
 
   if (tool.value === "compass") {
     if (!toolState.center) {
@@ -4373,7 +4696,148 @@ function handlePointerDown(event) {
   scheduleRender();
 }
 
+function handlePointerMove(event) {
+  const screen = getPointerScreenPosition(event);
+  pointerWorld = screenToWorld(screen);
+
+  if (event.pointerType === "touch") {
+    if (!activeTouchPoints.has(event.pointerId)) return;
+    activeTouchPoints.set(event.pointerId, {
+      id: event.pointerId,
+      x: screen.x,
+      y: screen.y,
+    });
+    if (touchTapCandidate && touchTapCandidate.id === event.pointerId) {
+      const traveled = dist(screen, touchTapCandidate.start);
+      if (traveled > TOUCH_TAP_SLOP_PX) {
+        touchTapCandidate.moved = true;
+      }
+    }
+    if (touchGesture) {
+      updateTouchGesture();
+      return;
+    }
+    if (activeTouchPoints.size >= 2) {
+      beginTouchGesture();
+      updateTouchGesture();
+      return;
+    }
+    if (touchDrawGesture && touchDrawGesture.id === event.pointerId) {
+      hoverSnap = getActionSnap(touchDrawGesture.toolId, pointerWorld);
+      scheduleRender();
+      return;
+    }
+    return;
+  }
+
+  if (isPanning) {
+    const dx = screen.x - pointerStart.x;
+    const dy = screen.y - pointerStart.y;
+    view.panX = panStart.x + dx / view.scale;
+    view.panY = panStart.y + dy / view.scale;
+    panDirty = true;
+    scheduleRender();
+    return;
+  }
+
+  if (["compass", "straightedge", "segment", "arc", "stamp", "copy", "paste"].includes(tool.value)) {
+    hoverSnap = getActionSnap(tool.value, pointerWorld);
+  } else {
+    hoverSnap = null;
+  }
+
+  scheduleRender();
+}
+
+function handlePointerDown(event) {
+  canvas.setPointerCapture(event.pointerId);
+  const screen = getPointerScreenPosition(event);
+  pointerWorld = screenToWorld(screen);
+
+  if (event.pointerType === "touch") {
+    event.preventDefault();
+    activeTouchPoints.set(event.pointerId, {
+      id: event.pointerId,
+      x: screen.x,
+      y: screen.y,
+    });
+    if (activeTouchPoints.size >= 2) {
+      beginTouchGesture();
+      updateTouchGesture();
+      return;
+    }
+    if (beginTouchDrawGesture(event.pointerId)) {
+      return;
+    }
+    if (!touchGesture && activeTouchPoints.size === 1) {
+      touchTapCandidate = {
+        id: event.pointerId,
+        start: { x: screen.x, y: screen.y },
+        moved: false,
+      };
+    } else {
+      touchTapCandidate = null;
+    }
+    return;
+  }
+
+  const panningIntent = spaceDown || event.button === 1;
+  if (panningIntent) {
+    isPanning = true;
+    panDirty = false;
+    panStart = { x: view.panX, y: view.panY };
+    pointerStart = { x: screen.x, y: screen.y };
+    return;
+  }
+
+  handlePrimaryPointerAction();
+}
+
 function handlePointerUp(event) {
+  if (event.pointerType === "touch") {
+    const screen = getPointerScreenPosition(event);
+    const pointerScreen = activeTouchPoints.get(event.pointerId) || {
+      id: event.pointerId,
+      x: screen.x,
+      y: screen.y,
+    };
+    const canceled = event.type === "pointercancel";
+    const wasTouchGesture = Boolean(touchGesture);
+    activeTouchPoints.delete(event.pointerId);
+    if (touchGesture) {
+      if (!getTouchGesturePoints()) {
+        touchGesture = null;
+        touchTapCandidate = null;
+        if (panDirty) {
+          panDirty = false;
+          scheduleRerasterizeFills();
+        }
+      } else {
+        updateTouchGesture();
+      }
+    }
+    if (!wasTouchGesture && finalizeTouchDrawGesture(event.pointerId, screenToWorld(pointerScreen), canceled)) {
+      if (touchTapCandidate && touchTapCandidate.id === event.pointerId) {
+        touchTapCandidate = null;
+      }
+      return;
+    }
+    if (
+      !canceled &&
+      !wasTouchGesture &&
+      touchTapCandidate &&
+      touchTapCandidate.id === event.pointerId &&
+      !touchTapCandidate.moved
+    ) {
+      pointerWorld = screenToWorld(pointerScreen);
+      handlePrimaryPointerAction();
+    }
+    if (touchTapCandidate && touchTapCandidate.id === event.pointerId) {
+      touchTapCandidate = null;
+    }
+    return;
+  }
+
   if (isPanning) {
     isPanning = false;
     if (panDirty) {
@@ -4385,8 +4849,7 @@ function handlePointerUp(event) {
 
 function handleWheel(event) {
   event.preventDefault();
-  const rect = canvas.getBoundingClientRect();
-  const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const screen = getPointerScreenPosition(event);
   const zoomFactor = Math.exp(-event.deltaY * 0.0015);
   zoomBy(zoomFactor, screen);
 }
