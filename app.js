@@ -37,6 +37,7 @@ const gridSettings = signal({
 });
 const debugPanelOpen = signal(false);
 const debugJson = signal("");
+const openMenu = signal(null);
 
 const view = {
   scale: 1,
@@ -197,6 +198,21 @@ function Toolbar() {
     scheduleRender();
   };
 
+  const openHoverMenu = (menuId) => {
+    openMenu.value = menuId;
+  };
+
+  const closeHoverMenu = (menuId) => {
+    if (openMenu.value === menuId) {
+      openMenu.value = null;
+    }
+  };
+
+  const runMenuAction = (fn) => {
+    fn();
+    openMenu.value = null;
+  };
+
   const positionEditPicker = (event, input) => {
     if (!input) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -217,8 +233,191 @@ function Toolbar() {
 
   return h(
     "div",
-    { class: "toolbar" },
-    h("h1", null, "CAG Toolkit"),
+    { class: "ui-shell" },
+    h(
+      "div",
+      { class: "menu-bar" },
+      h(
+        "div",
+        {
+          class: `menu-group ${openMenu.value === "file" ? "open" : ""}`,
+          onMouseEnter: () => openHoverMenu("file"),
+          onMouseLeave: () => closeHoverMenu("file"),
+        },
+        h("div", { class: "menu-trigger" }, "File"),
+        h(
+          "div",
+          { class: "menu-panel" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: "menu-action",
+              onClick: () => runMenuAction(() => downloadPng()),
+            },
+            h("span", null, "Download PNG")
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "menu-action",
+              onClick: () => runMenuAction(() => copyShareUrl()),
+            },
+            h("span", null, "Share")
+          )
+        )
+      ),
+      h(
+        "div",
+        {
+          class: `menu-group ${openMenu.value === "edit" ? "open" : ""}`,
+          onMouseEnter: () => openHoverMenu("edit"),
+          onMouseLeave: () => closeHoverMenu("edit"),
+        },
+        h("div", { class: "menu-trigger" }, "Edit"),
+        h(
+          "div",
+          { class: "menu-panel" },
+          h(
+            "button",
+            { type: "button", class: "menu-action", onClick: () => runMenuAction(() => undo()) },
+            h("span", null, "Undo"),
+            h("span", { class: "menu-shortcut" }, "Z")
+          ),
+          h(
+            "button",
+            { type: "button", class: "menu-action", onClick: () => runMenuAction(() => redo()) },
+            h("span", null, "Redo"),
+            h("span", { class: "menu-shortcut" }, "Y")
+          ),
+          h(
+            "button",
+            { type: "button", class: "menu-action danger", onClick: () => runMenuAction(() => clearAll()) },
+            h("span", null, "Clear"),
+            h("span", { class: "menu-shortcut" }, "X")
+          )
+        )
+      ),
+      h(
+        "div",
+        {
+          class: `menu-group ${openMenu.value === "grid" ? "open" : ""}`,
+          onMouseEnter: () => openHoverMenu("grid"),
+          onMouseLeave: () => closeHoverMenu("grid"),
+        },
+        h("div", { class: "menu-trigger" }, "Grid"),
+        h(
+          "div",
+          { class: "menu-panel menu-panel-grid" },
+          h(
+            "label",
+            { class: "menu-toggle" },
+            h("input", {
+              type: "checkbox",
+              checked: gridSettings.value.show,
+              onChange: (event) => updateGrid({ show: event.target.checked }),
+            }),
+            "Show Grid"
+          ),
+          h(
+            "label",
+            { class: "menu-toggle" },
+            h("input", {
+              type: "checkbox",
+              checked: gridSettings.value.snap,
+              onChange: (event) => updateGrid({ snap: event.target.checked }),
+            }),
+            "Snap to Grid"
+          ),
+          h("div", { class: "menu-divider" }),
+          h(
+            "div",
+            { class: "menu-slider" },
+            h("span", { class: "menu-label" }, "Size"),
+            h("input", {
+              type: "range",
+              min: 10,
+              max: 160,
+              step: 5,
+              value: gridSettings.value.size,
+              onInput: (event) => updateGrid({ size: Number(event.target.value) }),
+            }),
+            h("span", { class: "menu-slider-value" }, `${gridSettings.value.size}px`)
+          ),
+          h("div", { class: "menu-divider" }),
+          h(
+            "div",
+            { class: "menu-item has-submenu", tabIndex: 0, role: "menuitem" },
+            h("span", null, "Pattern"),
+            h("span", { class: "submenu-caret" }, ">"),
+            h(
+              "div",
+              { class: "menu-submenu" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: `menu-action ${gridSettings.value.pattern === "square" ? "selected" : ""}`,
+                  onClick: () => runMenuAction(() => updateGrid({ pattern: "square" })),
+                },
+                h("span", null, "Square")
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: `menu-action ${gridSettings.value.pattern === "hex" ? "selected" : ""}`,
+                  onClick: () => runMenuAction(() => updateGrid({ pattern: "hex" })),
+                },
+                h("span", null, "Hex")
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: `menu-action ${gridSettings.value.pattern === "triangle" ? "selected" : ""}`,
+                  onClick: () => runMenuAction(() => updateGrid({ pattern: "triangle" })),
+                },
+                h("span", null, "Triangle")
+              )
+            )
+          ),
+          h(
+            "div",
+            { class: "menu-item has-submenu", tabIndex: 0, role: "menuitem" },
+            h("span", null, "Style"),
+            h("span", { class: "submenu-caret" }, ">"),
+            h(
+              "div",
+              { class: "menu-submenu" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: `menu-action ${gridSettings.value.style === "lines" ? "selected" : ""}`,
+                  onClick: () => runMenuAction(() => updateGrid({ style: "lines" })),
+                },
+                h("span", null, "Lines")
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: `menu-action ${gridSettings.value.style === "dots" ? "selected" : ""}`,
+                  onClick: () => runMenuAction(() => updateGrid({ style: "dots" })),
+                },
+                h("span", null, "Dots")
+              )
+            )
+          )
+        )
+      )
+    ),
+    h(
+      "div",
+      { class: "toolbar" },
+      h("h1", null, "CAG Toolkit"),
     h(
       "div",
       { class: "tool-grid" },
@@ -380,80 +579,6 @@ function Toolbar() {
     ),
     h(
       "div",
-      { class: "grid-controls" },
-      h(
-        "div",
-        { class: "grid-row" },
-        h("span", { class: "grid-label" }, "Grid"),
-        h(
-          "label",
-          { class: "grid-toggle" },
-          h("input", {
-            type: "checkbox",
-            checked: gridSettings.value.show,
-            onChange: (event) => updateGrid({ show: event.target.checked }),
-          }),
-          "Show"
-        ),
-        h(
-          "label",
-          { class: "grid-toggle" },
-          h("input", {
-            type: "checkbox",
-            checked: gridSettings.value.snap,
-            onChange: (event) => updateGrid({ snap: event.target.checked }),
-          }),
-          "Snap"
-        )
-      ),
-      h(
-        "div",
-        { class: "grid-row" },
-        h("span", { class: "grid-sub" }, "Pattern"),
-        h(
-          "select",
-          {
-            class: "grid-select",
-            value: gridSettings.value.pattern,
-            onChange: (event) => updateGrid({ pattern: event.target.value }),
-          },
-          h("option", { value: "square" }, "Square"),
-          h("option", { value: "hex" }, "Hex"),
-          h("option", { value: "triangle" }, "Triangle")
-        )
-      ),
-      h(
-        "div",
-        { class: "grid-row" },
-        h("span", { class: "grid-sub" }, "Style"),
-        h(
-          "select",
-          {
-            class: "grid-select",
-            value: gridSettings.value.style,
-            onChange: (event) => updateGrid({ style: event.target.value }),
-          },
-          h("option", { value: "lines" }, "Lines"),
-          h("option", { value: "dots" }, "Dots")
-        )
-      ),
-      h(
-        "div",
-        { class: "grid-row" },
-        h("span", { class: "grid-sub" }, "Size"),
-        h("input", {
-          type: "range",
-          min: 10,
-          max: 160,
-          step: 5,
-          value: gridSettings.value.size,
-          onInput: (event) => updateGrid({ size: Number(event.target.value) }),
-        }),
-        h("span", { class: "grid-value" }, `${gridSettings.value.size}px`)
-      )
-    ),
-    h(
-      "div",
       { class: "zoom-controls" },
       h("span", { class: "zoom-label" }, "Zoom"),
       h(
@@ -487,68 +612,6 @@ function Toolbar() {
           },
           "0"
         )
-      )
-    ),
-    h(
-      "div",
-      { class: "action-controls" },
-      h(
-        "button",
-        {
-          type: "button",
-          class: "action-btn",
-          onClick: () => undo(),
-        },
-        h("span", null, "Undo"),
-        h("span", { class: "action-key" }, "Z")
-      ),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "action-btn",
-          onClick: () => redo(),
-        },
-        h("span", null, "Redo"),
-        h("span", { class: "action-key" }, "Y")
-      ),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "action-btn danger",
-          onClick: () => {
-            commitHistory();
-            state.primitives = [];
-            state.ink = [];
-            state.fills = [];
-            recomputeIntersections();
-          },
-        },
-        h("span", null, "Clear"),
-        h("span", { class: "action-key" }, "X")
-      )
-    ),
-    h(
-      "div",
-      { class: "export-controls" },
-      h(
-        "button",
-        {
-          type: "button",
-          class: "action-btn",
-          onClick: () => downloadPng(),
-        },
-        h("span", null, "Download PNG")
-      ),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "action-btn",
-          onClick: () => copyShareUrl(),
-        },
-        h("span", null, "Share")
       )
     ),
     h(
@@ -624,7 +687,7 @@ function Toolbar() {
       { class: "hint" },
       "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears. J shows JSON."
     )
-  );
+  ));
 }
 
 render(h(Toolbar), document.getElementById("ui"));
@@ -1395,6 +1458,14 @@ function redo() {
   history.past.push(snapshot());
   const next = history.future.pop();
   restore(next);
+}
+
+function clearAll() {
+  commitHistory();
+  state.primitives = [];
+  state.ink = [];
+  state.fills = [];
+  recomputeIntersections();
 }
 
 function expandBounds(bounds, point) {
@@ -3541,11 +3612,7 @@ function handleKeyDown(event) {
     redo();
   }
   if (key === "x") {
-    commitHistory();
-    state.primitives = [];
-    state.ink = [];
-    state.fills = [];
-    recomputeIntersections();
+    clearAll();
   }
   if (key === "j") {
     toggleDebugPanel();
