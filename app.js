@@ -11,6 +11,7 @@ import {
   RotateCw,
   Ruler,
   RulerDimensionLine,
+  Share2,
   Spline,
   Stamp,
 } from "https://cdn.jsdelivr.net/npm/lucide-preact@0.563.0/+esm";
@@ -50,7 +51,7 @@ const measureDistance = signal(null);
 const zoomValue = signal(1);
 const inkThickness = signal(2);
 const stampShape = signal("square");
-const stampSize = signal(60);
+const stampSize = signal(40);
 const showGuides = signal(true);
 const gridSettings = signal({
   show: true,
@@ -272,7 +273,7 @@ function resolveTouchMenuTargets(menuId, clientX, clientY) {
   const hit = document.elementFromPoint(clientX, clientY);
   if (!hit || !group.contains(hit)) return { highlightEl: null, submenuHost: null };
 
-  const submenuAction = hit.closest(".menu-submenu .menu-action");
+  const submenuAction = hit.closest(".menu-submenu button, .menu-submenu .menu-toggle");
   if (submenuAction && group.contains(submenuAction)) {
     return {
       highlightEl: submenuAction,
@@ -288,7 +289,7 @@ function resolveTouchMenuTargets(menuId, clientX, clientY) {
     };
   }
 
-  const selectable = hit.closest(".menu-action, .menu-toggle");
+  const selectable = hit.closest(".menu-panel button, .menu-panel .menu-toggle");
   if (selectable && group.contains(selectable)) {
     return {
       highlightEl: selectable,
@@ -438,11 +439,35 @@ function StampIcon({ shape }) {
 
 function Toolbar() {
   const paletteEditInputId = "palette-edit-picker";
+  const isMobileLayout = shouldHideToolPaletteByDefault();
   const stampOptions = [
     { id: "square", label: "Square" },
     { id: "circle", label: "Circle" },
     { id: "hex", label: "Hexagon" },
     { id: "triangle", label: "Triangle" },
+  ];
+  const sharedSizePresets = [
+    { label: "XS", value: 20 },
+    { label: "S", value: 30 },
+    { label: "M", value: 40 },
+    { label: "L", value: 60 },
+    { label: "XL", value: 80 },
+  ];
+  const stampSizePresets = sharedSizePresets;
+  const gridSizePresets = sharedSizePresets;
+  const inkThicknessPresets = [
+    { label: "1px", value: 1 },
+    { label: "2px", value: 2 },
+    { label: "3px", value: 3 },
+    { label: "5px", value: 5 },
+    { label: "10px", value: 10 },
+  ];
+  const fillAlphaPresets = [
+    { label: "10%", value: 0.1 },
+    { label: "25%", value: 0.25 },
+    { label: "50%", value: 0.5 },
+    { label: "75%", value: 0.75 },
+    { label: "100%", value: 1 },
   ];
 
   const setFillColor = (color) => {
@@ -639,6 +664,29 @@ function Toolbar() {
     fillAlpha.value = Number(value);
   };
 
+  const renderChoiceButtons = ({ className = "", label = "", options, value, onSelect }) =>
+    h(
+      "div",
+      { class: `menu-choice-group ${className}`.trim() },
+      label ? h("span", { class: "menu-choice-label" }, label) : null,
+      h(
+        "div",
+        { class: "menu-choice-row" },
+        options.map((option) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `menu-choice-btn ${Math.abs(value - option.value) < EPS ? "active" : ""}`,
+              onClick: () => onSelect(option.value),
+              "aria-label": `${label ? `${label} ` : ""}${option.label}`,
+            },
+            option.label
+          )
+        )
+      )
+    );
+
   const renderFillColorGrid = ({ editable = false, editInputId = "" } = {}) =>
     h(
       "div",
@@ -712,7 +760,7 @@ function Toolbar() {
         : null
     );
 
-  const renderStampControls = () =>
+  const renderStampControls = ({ discreteSize = false } = {}) =>
     h(
       "div",
       { class: "stamp-controls" },
@@ -734,53 +782,77 @@ function Toolbar() {
           )
         )
       ),
-      h(
-        "div",
-        { class: "stamp-size" },
-        h("span", { class: "stamp-size-label" }, "Size"),
-        h("input", {
-          type: "range",
-          min: 10,
-          max: 200,
-          step: 5,
-          value: stampSize.value,
-          onInput: (event) => setStampSizeValue(event.target.value),
-        }),
-        h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
-      )
+      discreteSize
+        ? renderChoiceButtons({
+            className: "stamp-size-choices",
+            label: "Size",
+            options: stampSizePresets,
+            value: stampSize.value,
+            onSelect: (value) => setStampSizeValue(value),
+          })
+        : h(
+            "div",
+            { class: "stamp-size" },
+            h("span", { class: "stamp-size-label" }, "Size"),
+            h("input", {
+              type: "range",
+              min: 10,
+              max: 200,
+              step: 5,
+              value: stampSize.value,
+              onInput: (event) => setStampSizeValue(event.target.value),
+            }),
+            h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
+          )
     );
 
-  const renderInkThicknessControl = () =>
-    h(
-      "div",
-      { class: "thickness-controls" },
-      h("span", { class: "thickness-label" }, "Ink"),
-      h("input", {
-        type: "range",
-        min: 1,
-        max: 8,
-        step: 0.5,
-        value: inkThickness.value,
-        onInput: (event) => setInkThicknessValue(event.target.value),
-      }),
-      h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
-    );
+  const renderInkThicknessControl = ({ discrete = false } = {}) =>
+    discrete
+      ? renderChoiceButtons({
+          className: "thickness-choice-group",
+          label: "Ink",
+          options: inkThicknessPresets,
+          value: inkThickness.value,
+          onSelect: (value) => setInkThicknessValue(value),
+        })
+      : h(
+          "div",
+          { class: "thickness-controls" },
+          h("span", { class: "thickness-label" }, "Ink"),
+          h("input", {
+            type: "range",
+            min: 1,
+            max: 8,
+            step: 0.5,
+            value: inkThickness.value,
+            onInput: (event) => setInkThicknessValue(event.target.value),
+          }),
+          h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
+        );
 
-  const renderFillAlphaControl = () =>
-    h(
-      "div",
-      { class: "alpha-controls" },
-      h("span", { class: "alpha-label" }, "Fill Alpha"),
-      h("input", {
-        type: "range",
-        min: 0,
-        max: 1,
-        step: 0.05,
-        value: fillAlpha.value,
-        onInput: (event) => setFillAlphaValue(event.target.value),
-      }),
-      h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
-    );
+  const renderFillAlphaControl = ({ discrete = false } = {}) =>
+    discrete
+      ? renderChoiceButtons({
+          className: "alpha-choice-group",
+          label: "Fill Alpha",
+          options: fillAlphaPresets,
+          value: fillAlpha.value,
+          onSelect: (value) => setFillAlphaValue(value),
+        })
+      : h(
+          "div",
+          { class: "alpha-controls" },
+          h("span", { class: "alpha-label" }, "Fill Alpha"),
+          h("input", {
+            type: "range",
+            min: 0,
+            max: 1,
+            step: 0.05,
+            value: fillAlpha.value,
+            onInput: (event) => setFillAlphaValue(event.target.value),
+          }),
+          h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
+        );
 
   const renderPaletteWindow = ({ id, title, className, position, onClose, children }) =>
     h(
@@ -832,49 +904,62 @@ function Toolbar() {
         h(
           "div",
           { class: "menu-panel" },
-          h(
-            "button",
-            {
-              type: "button",
-              class: "menu-action",
-              ...withMenuHelp("file", "Choose a filename and download the current drawing as JSON."),
-              onClick: () => runMenuAction(() => saveDrawingJson()),
-            },
-            h("span", null, "Save JSON"),
-            h("span", { class: "menu-shortcut" }, "⌘/Ctrl+S")
-          ),
-          h(
-            "button",
-            {
-              type: "button",
-              class: "menu-action",
-              ...withMenuHelp("file", "Load a local JSON drawing file and render it on the canvas."),
-              onClick: () => runMenuAction(() => loadDrawingJson()),
-            },
-            h("span", null, "Load JSON"),
-            h("span", { class: "menu-shortcut" }, "⌘/Ctrl+O")
-          ),
-          h("div", { class: "menu-divider" }),
-          h(
-            "button",
-            {
-              type: "button",
-              class: "menu-action",
-              ...withMenuHelp("file", "Export the drawing as a PNG image."),
-              onClick: () => runMenuAction(() => downloadPng()),
-            },
-            h("span", null, "Download PNG")
-          ),
-          h(
-            "button",
-            {
-              type: "button",
-              class: "menu-action",
-              ...withMenuHelp("file", "Copy a shareable URL that includes the current drawing."),
-              onClick: () => runMenuAction(() => copyShareUrl()),
-            },
-            h("span", null, "Share")
-          ),
+          isMobileLayout
+            ? h(
+                "button",
+                {
+                  type: "button",
+                  class: "menu-action",
+                  ...withMenuHelp("file", "Generate a PNG and open the browser share dialog."),
+                  onClick: () => runMenuAction(() => shareDrawingPng()),
+                },
+                h("span", null, "Share PNG")
+              )
+            : [
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "menu-action",
+                    ...withMenuHelp("file", "Choose a filename and download the current drawing as JSON."),
+                    onClick: () => runMenuAction(() => saveDrawingJson()),
+                  },
+                  h("span", null, "Save JSON"),
+                  h("span", { class: "menu-shortcut" }, "⌘/Ctrl+S")
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "menu-action",
+                    ...withMenuHelp("file", "Load a local JSON drawing file and render it on the canvas."),
+                    onClick: () => runMenuAction(() => loadDrawingJson()),
+                  },
+                  h("span", null, "Load JSON"),
+                  h("span", { class: "menu-shortcut" }, "⌘/Ctrl+O")
+                ),
+                h("div", { class: "menu-divider" }),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "menu-action",
+                    ...withMenuHelp("file", "Export the drawing as a PNG image."),
+                    onClick: () => runMenuAction(() => downloadPng()),
+                  },
+                  h("span", null, "Download PNG")
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "menu-action",
+                    ...withMenuHelp("file", "Copy a shareable URL that includes the current drawing."),
+                    onClick: () => runMenuAction(() => copyShareUrl()),
+                  },
+                  h("span", null, "Share URL")
+                ),
+              ],
           h("div", { class: "menu-divider" }),
           h(
             "button",
@@ -1009,18 +1094,22 @@ function Toolbar() {
             { class: "menu-section-label", ...withMenuHelp("settings", "Configure the stamp shape and size.") },
             "Stamp"
           ),
-          h("div", withMenuHelp("settings", "Choose stamp shape and adjust stamp size."), renderStampControls()),
+          h(
+            "div",
+            withMenuHelp("settings", "Choose stamp shape and adjust stamp size."),
+            renderStampControls({ discreteSize: isMobileLayout })
+          ),
           h("div", { class: "menu-divider" }),
           h(
             "div",
             withMenuHelp("settings", "Adjust the stroke thickness used by the Ink tool."),
-            renderInkThicknessControl()
+            renderInkThicknessControl({ discrete: isMobileLayout })
           ),
           h("div", { class: "menu-divider" }),
           h(
             "div",
             withMenuHelp("settings", "Adjust opacity for newly created fill regions."),
-            renderFillAlphaControl()
+            renderFillAlphaControl({ discrete: isMobileLayout })
           ),
           h("div", { class: "menu-divider" }),
           renderMenuHelp("settings")
@@ -1061,17 +1150,29 @@ function Toolbar() {
           h("div", { class: "menu-divider" }),
           h(
             "div",
-            { class: "menu-slider", ...withMenuHelp("grid", "Set spacing between grid steps.") },
-            h("span", { class: "menu-label" }, "Size"),
-            h("input", {
-              type: "range",
-              min: 10,
-              max: 160,
-              step: 5,
-              value: gridSettings.value.size,
-              onInput: (event) => updateGrid({ size: Number(event.target.value) }),
-            }),
-            h("span", { class: "menu-slider-value" }, `${gridSettings.value.size}px`)
+            withMenuHelp("grid", "Set spacing between grid steps."),
+            isMobileLayout
+              ? renderChoiceButtons({
+                  className: "grid-size-choices",
+                  label: "Size",
+                  options: gridSizePresets,
+                  value: gridSettings.value.size,
+                  onSelect: (value) => updateGrid({ size: Number(value) }),
+                })
+              : h(
+                  "div",
+                  { class: "menu-slider" },
+                  h("span", { class: "menu-label" }, "Size"),
+                  h("input", {
+                    type: "range",
+                    min: 10,
+                    max: 160,
+                    step: 5,
+                    value: gridSettings.value.size,
+                    onInput: (event) => updateGrid({ size: Number(event.target.value) }),
+                  }),
+                  h("span", { class: "menu-slider-value" }, `${gridSettings.value.size}px`)
+                )
           ),
           h("div", { class: "menu-divider" }),
           h(
@@ -1486,6 +1587,17 @@ function Toolbar() {
           "aria-label": "Redo",
         },
         h(ToolIcon, { Icon: RotateCw, size: 18 })
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "mobile-footer-btn",
+          onClick: () => shareDrawingPng(),
+          title: "Share PNG",
+          "aria-label": "Share PNG",
+        },
+        h(ToolIcon, { Icon: Share2, size: 18 })
       ),
       mobileFooterToolIds.map((toolId) => {
         const def = toolDefsById.get(toolId);
@@ -2586,12 +2698,12 @@ function computeExportBounds(includeGuides) {
   return bounds;
 }
 
-function downloadPng() {
+function buildExportPngCanvas() {
   const includeGuides = showGuides.value;
   const bounds = computeExportBounds(includeGuides);
   if (!bounds) {
     setStatus("Nothing to export.");
-    return;
+    return null;
   }
   const margin = 20;
   const widthWorld = Math.max(1, bounds.maxX - bounds.minX);
@@ -2740,10 +2852,62 @@ function downloadPng() {
   });
   ectx.restore();
 
+  return exportCanvas;
+}
+
+function downloadPng() {
+  const exportCanvas = buildExportPngCanvas();
+  if (!exportCanvas) return;
+
   const link = document.createElement("a");
   link.href = exportCanvas.toDataURL("image/png");
   link.download = "cag-drawing.png";
   link.click();
+}
+
+function dataUrlToFile(dataUrl, fileName) {
+  const [header, encoded = ""] = dataUrl.split(",");
+  const mimeMatch = /^data:(.*?);base64$/i.exec(header);
+  const mime = mimeMatch?.[1] || "image/png";
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], fileName, { type: mime });
+}
+
+async function shareDrawingPng() {
+  const exportCanvas = buildExportPngCanvas();
+  if (!exportCanvas) return;
+
+  const fileName = "cag-drawing.png";
+  try {
+    const dataUrl = exportCanvas.toDataURL("image/png");
+
+    if (navigator.share && typeof File === "function") {
+      const file = dataUrlToFile(dataUrl, fileName);
+      if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: APP_TITLE,
+          text: APP_TITLE,
+          files: [file],
+        });
+        setStatus("Shared PNG.");
+        return;
+      }
+    }
+
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = fileName;
+    link.click();
+    setStatus("Share unavailable; downloaded PNG.");
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    console.warn("PNG share failed", error);
+    setStatus("Could not share PNG.");
+  }
 }
 
 function setStrokeWidth(px) {
@@ -2976,6 +3140,7 @@ function drawPreview() {
   const pointRadius = 3.5 / view.scale;
   const pending = toolState;
   const snapped = hoverSnap?.center || hoverSnap?.point || pointerWorld;
+  const isMobileLayout = shouldHideToolPaletteByDefault();
 
   if (tool.value === "compass" && pending.center) {
     drawCircle({ c: pending.center, rp: snapped }, "#2b6bf3", 1.5, true);
@@ -3044,18 +3209,23 @@ function drawPreview() {
   }
 
   if (tool.value === "stamp") {
-    const size = stampSize.value;
-    if (stampShape.value === "circle") {
-      drawCircle({ c: snapped, rp: { x: snapped.x + size, y: snapped.y } }, "#8fbef8", 1.5, true);
-      ctx.save();
-      ctx.fillStyle = "#8fbef8";
-      ctx.beginPath();
-      ctx.arc(snapped.x, snapped.y, pointRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    } else {
-      const verts = getStampVertices(snapped, stampShape.value, size);
-      drawPolygon(verts, "#8fbef8", 1.5, true);
+    const shouldShowStampPreview = !isMobileLayout || touchDrawGesture?.kind === "stamp";
+    const stampPreviewPoint =
+      hoverSnap?.center || hoverSnap?.point || (shouldShowStampPreview ? pointerWorld : null);
+    if (shouldShowStampPreview && stampPreviewPoint) {
+      const size = stampSize.value;
+      if (stampShape.value === "circle") {
+        drawCircle({ c: stampPreviewPoint, rp: { x: stampPreviewPoint.x + size, y: stampPreviewPoint.y } }, "#8fbef8", 1.5, true);
+        ctx.save();
+        ctx.fillStyle = "#8fbef8";
+        ctx.beginPath();
+        ctx.arc(stampPreviewPoint.x, stampPreviewPoint.y, pointRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else {
+        const verts = getStampVertices(stampPreviewPoint, stampShape.value, size);
+        drawPolygon(verts, "#8fbef8", 1.5, true);
+      }
     }
   }
 
@@ -4362,6 +4532,7 @@ function isTouchDragConstructionTool(toolId) {
     toolId === "segment" ||
     toolId === "compass" ||
     toolId === "arc" ||
+    toolId === "stamp" ||
     toolId === "copy"
   );
 }
@@ -4438,6 +4609,13 @@ function beginTouchDrawGesture(pointerId) {
       start: target,
     };
     toolState = { step: 0, p0: target };
+  } else if (toolId === "stamp") {
+    touchDrawGesture = {
+      id: pointerId,
+      kind: "stamp",
+      toolId,
+    };
+    toolState = { step: 0 };
   }
 
   touchTapCandidate = null;
@@ -4570,6 +4748,22 @@ function finalizeTouchDrawGesture(pointerId, worldPoint, canceled = false) {
     measureDistance.value = d;
     toolState = { step: 0 };
     setStatus("Measure copied.");
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "stamp") {
+    const size = stampSize.value;
+    if (!Number.isFinite(size) || size <= 0) {
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    commitHistory();
+    addStampAt(target);
+    toolState = { step: 0 };
     bumpToolHelpTick();
     scheduleRender();
     return true;

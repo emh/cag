@@ -78,6 +78,14 @@ canvas {
   position: relative;
 }
 
+.menu-bar,
+.menu-bar *,
+.menu-panel,
+.menu-panel * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .menu-trigger {
   border: none;
   border-radius: 4px;
@@ -183,6 +191,15 @@ button {
   background: #dfe8ff;
 }
 
+.menu-panel button.touch-highlight {
+  box-shadow: 0 0 0 2px rgba(43, 107, 243, 0.9) inset;
+}
+
+.menu-panel .swatch.touch-highlight,
+.menu-panel .stamp-btn.touch-highlight {
+  box-shadow: 0 0 0 2px rgba(43, 107, 243, 0.9) inset;
+}
+
 .menu-action.selected {
   background: #dfe8ff;
   font-weight: 600;
@@ -261,6 +278,46 @@ button {
   font-size: 12px;
   font-weight: 600;
   color: #213259;
+}
+
+.menu-choice-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.menu-choice-label {
+  font-size: 12px;
+  color: #4d5a7a;
+}
+
+.menu-choice-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+
+.menu-choice-btn {
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #213259;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 4px;
+  cursor: pointer;
+}
+
+.menu-choice-btn:hover {
+  background: #e2e9ff;
+}
+
+.menu-choice-btn.active {
+  border-color: #2b6bf3;
+  background: #2b6bf3;
+  color: #ffffff;
 }
 
 .menu-item {
@@ -820,8 +877,9 @@ button {
 }
 
 .mobile-footer-btn {
-  flex: 0 0 34px;
-  width: 34px;
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
   height: 34px;
   border: 1px solid #d7e0f4;
   border-radius: 10px;
