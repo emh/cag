@@ -142,7 +142,7 @@ const TOOL_MENU_HELP = {
   segment: "Draws a finite line segment between two selected points.",
   compass: "Draws a circle from a selected center and radius point.",
   arc: "Draws an arc from center, start, and end points.",
-  ink: "Inks a visible span on a line, segment, or circle.",
+  ink: "Inks a visible span on a line, segment, circle, or arc.",
   fill: "Fills an enclosed region bounded by inked edges.",
   stamp: "Stamps the selected shape at the clicked location.",
   copy: "Copies a distance from a segment, circle radius, or two points.",
@@ -434,7 +434,7 @@ function Toolbar() {
       return "Click to select the arc's end point on the circumference.";
     }
     if (tool.value === "ink") {
-      return "Click a line, segment, or circle to ink that span.";
+      return "Click a line, segment, circle, or arc to ink that span.";
     }
     if (tool.value === "fill") {
       return "Click inside an enclosed ink region to fill it.";
@@ -1192,7 +1192,7 @@ function Toolbar() {
             h(
               "p",
               { class: "info-text" },
-              "Draw lines and circles, ink the segments and arcs between intersections, and add color to the areas surrounded by ink."
+              "Draw lines and circles, ink spans between intersections or endpoints, and add color to the areas surrounded by ink."
             ),
             h(
               "p",
@@ -1746,6 +1746,10 @@ function isCirclePrimitive(prim) {
   return prim.type === "circle" || prim.type === "measure" || prim.type === "arc";
 }
 
+function isArcPrimitive(prim) {
+  return prim.type === "arc" || prim.type === "measure";
+}
+
 function isLineLike(prim) {
   return prim.type === "line" || prim.type === "segment";
 }
@@ -2232,17 +2236,22 @@ function computeBoundsForSegments(segments, fallbackBounds) {
     if (seg.kind === "circle") {
       const radius = dist(prim.c, prim.rp);
       if (seg.full) {
-        bounds = expandBoundsCircle(bounds, prim.c, radius);
-      } else {
-        const aInter = intersections.byId.get(seg.a.id);
-        const bInter = intersections.byId.get(seg.b.id);
-        if (!aInter || !bInter) {
+        if (prim.type === "circle") {
           bounds = expandBoundsCircle(bounds, prim.c, radius);
+        } else if (isArcPrimitive(prim)) {
+          bounds = expandBoundsArc(bounds, prim.c, radius, prim.startAngle, prim.endAngle, false);
+        }
+      } else {
+        const angles = resolveCircularSegmentAngles(seg, prim);
+        if (!angles) {
+          if (prim.type === "circle") {
+            bounds = expandBoundsCircle(bounds, prim.c, radius);
+          } else if (isArcPrimitive(prim)) {
+            bounds = expandBoundsArc(bounds, prim.c, radius, prim.startAngle, prim.endAngle, false);
+          }
           return;
         }
-        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
-        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
-        bounds = expandBoundsArc(bounds, prim.c, radius, aAngle, bAngle, seg.ccw);
+        bounds = expandBoundsArc(bounds, prim.c, radius, angles.aAngle, angles.bAngle, seg.ccw);
       }
     }
     if (seg.kind === "line") {
@@ -2315,14 +2324,15 @@ function computeExportBounds(includeGuides) {
     if (seg.kind === "circle") {
       const radius = dist(prim.c, prim.rp);
       if (seg.full) {
-        bounds = expandBoundsCircle(bounds, prim.c, radius);
+        if (prim.type === "circle") {
+          bounds = expandBoundsCircle(bounds, prim.c, radius);
+        } else if (isArcPrimitive(prim)) {
+          bounds = expandBoundsArc(bounds, prim.c, radius, prim.startAngle, prim.endAngle, false);
+        }
       } else {
-        const aInter = intersections.byId.get(seg.a.id);
-        const bInter = intersections.byId.get(seg.b.id);
-        if (!aInter || !bInter) return;
-        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
-        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
-        bounds = expandBoundsArc(bounds, prim.c, radius, aAngle, bAngle, seg.ccw);
+        const angles = resolveCircularSegmentAngles(seg, prim);
+        if (!angles) return;
+        bounds = expandBoundsArc(bounds, prim.c, radius, angles.aAngle, angles.bAngle, seg.ccw);
       }
     }
     if (seg.kind === "line") {
@@ -2512,16 +2522,19 @@ function downloadPng() {
       const radius = dist(prim.c, prim.rp);
       if (seg.full) {
         ectx.beginPath();
-        ectx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        if (prim.type === "circle") {
+          ectx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        } else if (isArcPrimitive(prim)) {
+          ectx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
+        } else {
+          return;
+        }
         ectx.stroke();
       } else {
-        const aInter = intersections.byId.get(seg.a.id);
-        const bInter = intersections.byId.get(seg.b.id);
-        if (!aInter || !bInter) return;
-        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
-        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        const angles = resolveCircularSegmentAngles(seg, prim);
+        if (!angles) return;
         ectx.beginPath();
-        ectx.arc(prim.c.x, prim.c.y, radius, aAngle, bAngle, seg.ccw);
+        ectx.arc(prim.c.x, prim.c.y, radius, angles.aAngle, angles.bAngle, seg.ccw);
         ectx.stroke();
       }
     }
@@ -2639,6 +2652,42 @@ function resolveLineEndpoint(endpoint, line, bounds) {
   return null;
 }
 
+function intersectionParamForPrim(intersection, primId) {
+  if (intersection.aId === primId) return intersection.aParam;
+  if (intersection.bId === primId) return intersection.bParam;
+  return null;
+}
+
+function resolveCircularEndpointAngle(endpoint, prim) {
+  if (!endpoint) return null;
+  if (endpoint.type === "intersection") {
+    const inter = intersections.byId.get(endpoint.id);
+    if (!inter) return null;
+    const param = intersectionParamForPrim(inter, prim.id);
+    if (Number.isFinite(param)) return normalizeAngle(param);
+    return normalizeAngle(Math.atan2(inter.point.y - prim.c.y, inter.point.x - prim.c.x));
+  }
+  if (endpoint.type === "endpoint") {
+    if (!isArcPrimitive(prim)) return null;
+    if (endpoint.which === "start") return normalizeAngle(prim.startAngle);
+    if (endpoint.which === "end") return normalizeAngle(prim.endAngle);
+  }
+  return null;
+}
+
+function resolveCircularSegmentAngles(seg, prim) {
+  const aAngle = resolveCircularEndpointAngle(seg.a, prim);
+  const bAngle = resolveCircularEndpointAngle(seg.b, prim);
+  if (aAngle === null || bAngle === null) return null;
+  return { aAngle, bAngle };
+}
+
+function circularEndpointKey(endpoint) {
+  if (endpoint?.type === "intersection") return `i:${endpoint.id}`;
+  if (endpoint?.type === "endpoint") return `e:${endpoint.which}`;
+  return "none";
+}
+
 function drawInkSegment(seg) {
   const prim = state.primitives.find((p) => p.id === seg.primId);
   if (!prim) return;
@@ -2665,19 +2714,23 @@ function drawInkSegment(seg) {
     const radius = dist(prim.c, prim.rp);
     if (seg.full) {
       ctx.beginPath();
-      ctx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
-      ctx.stroke();
-    } else {
-      const aInter = intersections.byId.get(seg.a.id);
-      const bInter = intersections.byId.get(seg.b.id);
-      if (!aInter || !bInter) {
+      if (prim.type === "circle") {
+        ctx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+      } else if (isArcPrimitive(prim)) {
+        ctx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
+      } else {
         ctx.restore();
         return;
       }
-      const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
-      const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+      ctx.stroke();
+    } else {
+      const angles = resolveCircularSegmentAngles(seg, prim);
+      if (!angles) {
+        ctx.restore();
+        return;
+      }
       ctx.beginPath();
-      ctx.arc(prim.c.x, prim.c.y, radius, aAngle, bAngle, seg.ccw);
+      ctx.arc(prim.c.x, prim.c.y, radius, angles.aAngle, angles.bAngle, seg.ccw);
       ctx.stroke();
     }
   }
@@ -3407,18 +3460,19 @@ function hitTestInk(worldPoint) {
     if (seg.kind === "circle") {
       const radius = dist(prim.c, prim.rp);
       if (seg.full) {
+        if (isArcPrimitive(prim)) {
+          const angle = normalizeAngle(Math.atan2(worldPoint.y - prim.c.y, worldPoint.x - prim.c.x));
+          if (!angleInArc(angle, prim.startAngle, prim.endAngle)) continue;
+        }
         const d = Math.abs(dist(prim.c, worldPoint) - radius);
         if (d <= hitRadius) {
           if (!best || d < best.distance) best = { seg, distance: d };
         }
       } else {
-        const aInter = intersections.byId.get(seg.a.id);
-        const bInter = intersections.byId.get(seg.b.id);
-        if (!aInter || !bInter) continue;
-        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
-        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        const angles = resolveCircularSegmentAngles(seg, prim);
+        if (!angles) continue;
         const angle = normalizeAngle(Math.atan2(worldPoint.y - prim.c.y, worldPoint.x - prim.c.x));
-        if (!angleOnArc(angle, aAngle, bAngle, seg.ccw)) continue;
+        if (!angleOnArc(angle, angles.aAngle, angles.bAngle, seg.ccw)) continue;
         const d = Math.abs(dist(prim.c, worldPoint) - radius);
         if (d <= hitRadius) {
           if (!best || d < best.distance) best = { seg, distance: d };
@@ -3510,7 +3564,7 @@ function inkSegmentKey(seg) {
   }
   if (seg.kind === "circle") {
     if (seg.full) return `circle:${seg.primId}:full`;
-    return `circle:${seg.primId}:a:${seg.a?.id}:b:${seg.b?.id}:ccw:${seg.ccw ? 1 : 0}`;
+    return `circle:${seg.primId}:a:${circularEndpointKey(seg.a)}:b:${circularEndpointKey(seg.b)}:ccw:${seg.ccw ? 1 : 0}`;
   }
   return `seg:${seg.primId}:${seg.kind}`;
 }
@@ -3734,6 +3788,43 @@ function inkCircleSegment(circle, worldPoint) {
   addInkSegment(seg);
 }
 
+function inkArcSegment(arc, worldPoint) {
+  const list = intersections.byPrim.get(arc.id) || [];
+  const clickPoint = closestPointOnArc(arc, worldPoint);
+  const clickAngle = normalizeAngle(Math.atan2(clickPoint.y - arc.c.y, clickPoint.x - arc.c.x));
+  const startAngle = normalizeAngle(arc.startAngle);
+  const endAngle = normalizeAngle(arc.endAngle);
+  const span = normalizeAngle(endAngle - startAngle);
+  const clickSweep = normalizeAngle(clickAngle - startAngle);
+
+  let before = null;
+  let after = null;
+
+  list.forEach((inter) => {
+    if (!angleInArc(inter.param, startAngle, endAngle)) return;
+    const sweep = normalizeAngle(inter.param - startAngle);
+    if (sweep > span + EPS) return;
+    if (sweep < clickSweep - EPS) {
+      if (!before || sweep > before.sweep) before = { id: inter.id, sweep };
+    }
+    if (sweep > clickSweep + EPS) {
+      if (!after || sweep < after.sweep) after = { id: inter.id, sweep };
+    }
+  });
+
+  const seg = {
+    id: state.nextInkId++,
+    primId: arc.id,
+    kind: "circle",
+    full: false,
+    a: before ? { type: "intersection", id: before.id } : { type: "endpoint", which: "start" },
+    b: after ? { type: "intersection", id: after.id } : { type: "endpoint", which: "end" },
+    ccw: false,
+    thickness: inkThickness.value,
+  };
+  addInkSegment(seg);
+}
+
 function pruneInkSegments() {
   const removed = new Set();
   const newInk = [];
@@ -3765,16 +3856,39 @@ function pruneInkSegments() {
       }
     }
     if (seg.kind === "circle") {
-      const inters = intersections.byPrim.get(prim.id) || [];
+      if (!isCirclePrimitive(prim)) {
+        removed.add(seg.id);
+        continue;
+      }
       if (seg.full) {
-        if (inters.length >= 2) {
-          removed.add(seg.id);
-          continue;
+        if (prim.type === "circle") {
+          const inters = intersections.byPrim.get(prim.id) || [];
+          if (inters.length >= 2) {
+            removed.add(seg.id);
+            continue;
+          }
         }
       } else {
-        const aOk = intersections.byId.has(seg.a.id);
-        const bOk = intersections.byId.has(seg.b.id);
-        if (!aOk || !bOk) {
+        const endpoints = [seg.a, seg.b];
+        let valid = true;
+        for (const endpoint of endpoints) {
+          if (!endpoint) {
+            valid = false;
+            continue;
+          }
+          if (endpoint.type === "intersection" && !intersections.byId.has(endpoint.id)) {
+            valid = false;
+          }
+          if (endpoint.type === "endpoint") {
+            if (!isArcPrimitive(prim) || (endpoint.which !== "start" && endpoint.which !== "end")) {
+              valid = false;
+            }
+          }
+          if (endpoint.type !== "intersection" && endpoint.type !== "endpoint") {
+            valid = false;
+          }
+        }
+        if (!valid) {
           removed.add(seg.id);
           continue;
         }
@@ -3860,16 +3974,19 @@ function rasterizeFill(seedWorld, boundsWorld, inkSegments = state.ink) {
       const radius = dist(prim.c, prim.rp);
       if (seg.full) {
         mctx.beginPath();
-        mctx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        if (prim.type === "circle") {
+          mctx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+        } else if (isArcPrimitive(prim)) {
+          mctx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
+        } else {
+          return;
+        }
         mctx.stroke();
       } else {
-        const aInter = intersections.byId.get(seg.a.id);
-        const bInter = intersections.byId.get(seg.b.id);
-        if (!aInter || !bInter) return;
-        const aAngle = normalizeAngle(Math.atan2(aInter.point.y - prim.c.y, aInter.point.x - prim.c.x));
-        const bAngle = normalizeAngle(Math.atan2(bInter.point.y - prim.c.y, bInter.point.x - prim.c.x));
+        const angles = resolveCircularSegmentAngles(seg, prim);
+        if (!angles) return;
         mctx.beginPath();
-        mctx.arc(prim.c.x, prim.c.y, radius, aAngle, bAngle, seg.ccw);
+        mctx.arc(prim.c.x, prim.c.y, radius, angles.aAngle, angles.bAngle, seg.ccw);
         mctx.stroke();
       }
     }
@@ -4176,12 +4293,18 @@ function handlePointerDown(event) {
   if (tool.value === "ink") {
     const hit = hitTestPrimitive(pointerWorld);
     if (!hit) return;
+    if (hit.type !== "line" && hit.type !== "segment" && hit.type !== "circle" && hit.type !== "arc") {
+      return;
+    }
     commitHistory();
     if (hit.type === "line" || hit.type === "segment") {
       inkLineSegment(hit, pointerWorld);
     }
     if (hit.type === "circle") {
       inkCircleSegment(hit, pointerWorld);
+    }
+    if (hit.type === "arc") {
+      inkArcSegment(hit, pointerWorld);
     }
   }
 
