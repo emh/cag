@@ -324,7 +324,11 @@ function handleTouchMenuPointerEnd(event) {
   const canceled = event.type === "pointercancel";
   const selected = !canceled ? touchMenuSession.highlightEl : null;
   if (selected) {
-    selected.click();
+    if (selected.dataset.touchReleaseAction === "share-png") {
+      shareDrawingPng();
+    } else {
+      selected.click();
+    }
   }
   clearTouchMenuSession({ closeMenu: true });
 }
@@ -910,6 +914,7 @@ function Toolbar() {
                 {
                   type: "button",
                   class: "menu-action",
+                  "data-touch-release-action": "share-png",
                   ...withMenuHelp("file", "Generate a PNG and open the browser share dialog."),
                   onClick: () => runMenuAction(() => shareDrawingPng()),
                 },
@@ -2882,9 +2887,9 @@ async function shareDrawingPng() {
   if (!exportCanvas) return;
 
   const fileName = "cag-drawing.png";
-  try {
-    const dataUrl = exportCanvas.toDataURL("image/png");
+  const dataUrl = exportCanvas.toDataURL("image/png");
 
+  try {
     if (navigator.share && typeof File === "function") {
       const file = dataUrlToFile(dataUrl, fileName);
       if (!navigator.canShare || navigator.canShare({ files: [file] })) {
@@ -2906,7 +2911,16 @@ async function shareDrawingPng() {
   } catch (error) {
     if (error?.name === "AbortError") return;
     console.warn("PNG share failed", error);
-    setStatus("Could not share PNG.");
+    try {
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = fileName;
+      link.click();
+      setStatus("Share unavailable; downloaded PNG.");
+    } catch (downloadError) {
+      console.warn("PNG fallback download failed", downloadError);
+      setStatus("Could not share PNG.");
+    }
   }
 }
 
@@ -5189,6 +5203,10 @@ function handleWheel(event) {
   zoomBy(zoomFactor, screen);
 }
 
+function preventNativeViewportGesture(event) {
+  event.preventDefault();
+}
+
 function handleKeyDown(event) {
   const key = event.key.toLowerCase();
   const withCommand = event.metaKey || event.ctrlKey;
@@ -5275,6 +5293,9 @@ window.addEventListener("pointercancel", stopPaletteDrag);
 window.addEventListener("pointermove", handleTouchMenuPointerMove, { passive: false });
 window.addEventListener("pointerup", handleTouchMenuPointerEnd, { passive: false });
 window.addEventListener("pointercancel", handleTouchMenuPointerEnd, { passive: false });
+document.addEventListener("gesturestart", preventNativeViewportGesture, { passive: false });
+document.addEventListener("gesturechange", preventNativeViewportGesture, { passive: false });
+document.addEventListener("gestureend", preventNativeViewportGesture, { passive: false });
 window.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keyup", handleKeyUp);
 window.addEventListener("resize", scheduleRender);
