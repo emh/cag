@@ -94,6 +94,14 @@ canvas {
   user-select: none;
 }
 
+.menu-trigger,
+.menu-action,
+.menu-toggle,
+.menu-item.has-submenu,
+button {
+  touch-action: manipulation;
+}
+
 .menu-trigger:hover,
 .menu-group.open .menu-trigger {
   background: rgba(43, 107, 243, 0.12);
@@ -167,6 +175,12 @@ canvas {
 .menu-action:hover,
 .menu-action:focus {
   background: #eef3ff;
+}
+
+.menu-action.touch-highlight,
+.menu-toggle.touch-highlight,
+.menu-item.has-submenu.touch-highlight {
+  background: #dfe8ff;
 }
 
 .menu-action.selected {
@@ -295,6 +309,10 @@ canvas {
 
 .menu-item.has-submenu:hover .menu-submenu,
 .menu-item.has-submenu:focus-within .menu-submenu {
+  display: flex;
+}
+
+.menu-item.has-submenu.touch-submenu-open .menu-submenu {
   display: flex;
 }
 
@@ -1034,6 +1052,20 @@ canvas {
 }
 
 @media (max-width: 768px), (pointer: coarse) {
+  .menu-bar {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .menu-panel {
+    max-width: min(92vw, 320px);
+  }
+
+  .menu-group-end .menu-panel {
+    left: auto;
+    right: 0;
+  }
+
   .mobile-footer-toolbar {
     display: flex;
   }

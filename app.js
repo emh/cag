@@ -119,6 +119,7 @@ const activeTouchPoints = new Map();
 let touchTapCandidate = null;
 let touchGesture = null;
 let touchDrawGesture = null;
+let touchMenuSession = null;
 
 const history = {
   past: [],
@@ -202,6 +203,129 @@ function clearMenuHoverHelp(menuId) {
   const prev = menuHoverHelp.value;
   if (!prev[menuId]) return;
   menuHoverHelp.value = { ...prev, [menuId]: "" };
+}
+
+function isTouchPointerEvent(event) {
+  return event?.pointerType === "touch";
+}
+
+function clearTouchMenuSession({ closeMenu = false } = {}) {
+  if (!touchMenuSession) return;
+  touchMenuSession.highlightEl?.classList.remove("touch-highlight");
+  touchMenuSession.submenuHost?.classList.remove("touch-submenu-open");
+  const activeMenuId = touchMenuSession.menuId;
+  touchMenuSession = null;
+  if (!closeMenu) return;
+  if (openMenu.value) {
+    clearMenuHoverHelp(openMenu.value);
+  } else if (activeMenuId) {
+    clearMenuHoverHelp(activeMenuId);
+  }
+  openMenu.value = null;
+}
+
+function setTouchMenuHighlight(nextEl) {
+  if (!touchMenuSession) return;
+  if (touchMenuSession.highlightEl === nextEl) return;
+  if (touchMenuSession.highlightEl) {
+    touchMenuSession.highlightEl.classList.remove("touch-highlight");
+  }
+  touchMenuSession.highlightEl = nextEl || null;
+  if (touchMenuSession.highlightEl) {
+    touchMenuSession.highlightEl.classList.add("touch-highlight");
+  }
+}
+
+function setTouchMenuSubmenuHost(nextHost) {
+  if (!touchMenuSession) return;
+  if (touchMenuSession.submenuHost === nextHost) return;
+  if (touchMenuSession.submenuHost) {
+    touchMenuSession.submenuHost.classList.remove("touch-submenu-open");
+  }
+  touchMenuSession.submenuHost = nextHost || null;
+  if (touchMenuSession.submenuHost) {
+    touchMenuSession.submenuHost.classList.add("touch-submenu-open");
+  }
+}
+
+function beginTouchMenuSession(menuId, pointerId) {
+  clearTouchMenuSession();
+  if (openMenu.value && openMenu.value !== menuId) {
+    clearMenuHoverHelp(openMenu.value);
+  }
+  openMenu.value = menuId;
+  touchMenuSession = {
+    menuId,
+    pointerId,
+    highlightEl: null,
+    submenuHost: null,
+  };
+}
+
+function getTouchMenuGroupElement(menuId) {
+  return document.querySelector(`.menu-group[data-menu-id="${menuId}"]`);
+}
+
+function resolveTouchMenuTargets(menuId, clientX, clientY) {
+  const group = getTouchMenuGroupElement(menuId);
+  if (!group) return { highlightEl: null, submenuHost: null };
+  const hit = document.elementFromPoint(clientX, clientY);
+  if (!hit || !group.contains(hit)) return { highlightEl: null, submenuHost: null };
+
+  const submenuAction = hit.closest(".menu-submenu .menu-action");
+  if (submenuAction && group.contains(submenuAction)) {
+    return {
+      highlightEl: submenuAction,
+      submenuHost: submenuAction.closest(".menu-item.has-submenu"),
+    };
+  }
+
+  const submenuHost = hit.closest(".menu-item.has-submenu");
+  if (submenuHost && group.contains(submenuHost)) {
+    return {
+      highlightEl: null,
+      submenuHost,
+    };
+  }
+
+  const selectable = hit.closest(".menu-action, .menu-toggle");
+  if (selectable && group.contains(selectable)) {
+    return {
+      highlightEl: selectable,
+      submenuHost: null,
+    };
+  }
+
+  return { highlightEl: null, submenuHost: null };
+}
+
+function updateTouchMenuSelection(clientX, clientY) {
+  if (!touchMenuSession) return;
+  const { highlightEl, submenuHost } = resolveTouchMenuTargets(touchMenuSession.menuId, clientX, clientY);
+  setTouchMenuSubmenuHost(submenuHost);
+  setTouchMenuHighlight(highlightEl);
+}
+
+function handleTouchMenuPointerMove(event) {
+  if (!touchMenuSession || !isTouchPointerEvent(event) || event.pointerId !== touchMenuSession.pointerId) {
+    return;
+  }
+  event.preventDefault();
+  updateTouchMenuSelection(event.clientX, event.clientY);
+}
+
+function handleTouchMenuPointerEnd(event) {
+  if (!touchMenuSession || !isTouchPointerEvent(event) || event.pointerId !== touchMenuSession.pointerId) {
+    return;
+  }
+  event.preventDefault();
+  updateTouchMenuSelection(event.clientX, event.clientY);
+  const canceled = event.type === "pointercancel";
+  const selected = !canceled ? touchMenuSession.highlightEl : null;
+  if (selected) {
+    selected.click();
+  }
+  clearTouchMenuSession({ closeMenu: true });
 }
 
 function withMenuHelp(menuId, text, props = {}) {
@@ -426,6 +550,13 @@ function Toolbar() {
       clearMenuHoverHelp(openMenu.value);
     }
     openMenu.value = null;
+  };
+
+  const startTouchMenuDrag = (event, menuId) => {
+    if (!isTouchPointerEvent(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginTouchMenuSession(menuId, event.pointerId);
   };
 
   const getToolHelpText = () => {
@@ -693,10 +824,11 @@ function Toolbar() {
         "div",
         {
           class: `menu-group ${openMenu.value === "file" ? "open" : ""}`,
+          "data-menu-id": "file",
           onMouseEnter: () => openHoverMenu("file"),
           onMouseLeave: () => closeHoverMenu("file"),
         },
-        h("div", { class: "menu-trigger" }, "File"),
+        h("div", { class: "menu-trigger", onPointerDown: (event) => startTouchMenuDrag(event, "file") }, "File"),
         h(
           "div",
           { class: "menu-panel" },
@@ -762,10 +894,11 @@ function Toolbar() {
         "div",
         {
           class: `menu-group ${openMenu.value === "edit" ? "open" : ""}`,
+          "data-menu-id": "edit",
           onMouseEnter: () => openHoverMenu("edit"),
           onMouseLeave: () => closeHoverMenu("edit"),
         },
-        h("div", { class: "menu-trigger" }, "Edit"),
+        h("div", { class: "menu-trigger", onPointerDown: (event) => startTouchMenuDrag(event, "edit") }, "Edit"),
         h(
           "div",
           { class: "menu-panel" },
@@ -810,10 +943,11 @@ function Toolbar() {
         "div",
         {
           class: `menu-group ${openMenu.value === "tool" ? "open" : ""}`,
+          "data-menu-id": "tool",
           onMouseEnter: () => openHoverMenu("tool"),
           onMouseLeave: () => closeHoverMenu("tool"),
         },
-        h("div", { class: "menu-trigger" }, "Tool"),
+        h("div", { class: "menu-trigger", onPointerDown: (event) => startTouchMenuDrag(event, "tool") }, "Tool"),
         h(
           "div",
           { class: "menu-panel menu-panel-tools" },
@@ -844,10 +978,15 @@ function Toolbar() {
         "div",
         {
           class: `menu-group ${openMenu.value === "settings" ? "open" : ""}`,
+          "data-menu-id": "settings",
           onMouseEnter: () => openHoverMenu("settings"),
           onMouseLeave: () => closeHoverMenu("settings"),
         },
-        h("div", { class: "menu-trigger" }, "Settings"),
+        h(
+          "div",
+          { class: "menu-trigger", onPointerDown: (event) => startTouchMenuDrag(event, "settings") },
+          "Settings"
+        ),
         h(
           "div",
           { class: "menu-panel menu-panel-settings" },
@@ -890,11 +1029,12 @@ function Toolbar() {
       h(
         "div",
         {
-          class: `menu-group ${openMenu.value === "grid" ? "open" : ""}`,
+          class: `menu-group menu-group-end ${openMenu.value === "grid" ? "open" : ""}`,
+          "data-menu-id": "grid",
           onMouseEnter: () => openHoverMenu("grid"),
           onMouseLeave: () => closeHoverMenu("grid"),
         },
-        h("div", { class: "menu-trigger" }, "Grid"),
+        h("div", { class: "menu-trigger", onPointerDown: (event) => startTouchMenuDrag(event, "grid") }, "Grid"),
         h(
           "div",
           { class: "menu-panel menu-panel-grid" },
@@ -1021,11 +1161,12 @@ function Toolbar() {
       h(
         "div",
         {
-          class: `menu-group ${openMenu.value === "view" ? "open" : ""}`,
+          class: `menu-group menu-group-end ${openMenu.value === "view" ? "open" : ""}`,
+          "data-menu-id": "view",
           onMouseEnter: () => openHoverMenu("view"),
           onMouseLeave: () => closeHoverMenu("view"),
         },
-        h("div", { class: "menu-trigger" }, "View"),
+        h("div", { class: "menu-trigger", onPointerDown: (event) => startTouchMenuDrag(event, "view") }, "View"),
         h(
           "div",
           { class: "menu-panel" },
@@ -4937,6 +5078,9 @@ canvas.addEventListener("wheel", handleWheel, { passive: false });
 window.addEventListener("pointermove", handlePaletteDrag);
 window.addEventListener("pointerup", stopPaletteDrag);
 window.addEventListener("pointercancel", stopPaletteDrag);
+window.addEventListener("pointermove", handleTouchMenuPointerMove, { passive: false });
+window.addEventListener("pointerup", handleTouchMenuPointerEnd, { passive: false });
+window.addEventListener("pointercancel", handleTouchMenuPointerEnd, { passive: false });
 window.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keyup", handleKeyUp);
 window.addEventListener("resize", scheduleRender);
