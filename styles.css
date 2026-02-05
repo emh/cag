@@ -257,28 +257,77 @@ canvas {
   display: flex;
 }
 
-.toolbar {
+.palette-window {
   position: absolute;
-  top: calc(var(--menu-bar-height) + 12px);
-  left: 12px;
   width: 296px;
+  display: flex;
+  flex-direction: column;
   background: var(--ui-bg);
   border: 1px solid var(--ui-border);
   border-radius: 14px;
-  padding: 12px 14px;
   box-shadow: 0 10px 28px var(--ui-shadow);
   backdrop-filter: blur(8px);
   pointer-events: auto;
   z-index: 200;
+  overflow: hidden;
 }
 
-.toolbar h1 {
-  font-size: 12px;
-  margin: 0 0 8px;
+.palette-window.tool-palette {
+  width: 296px;
+}
+
+.palette-window.settings-palette {
+  width: 336px;
+}
+
+.palette-window-header {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid #dce4f4;
+  background: rgba(237, 242, 255, 0.9);
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.palette-window-title {
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   color: #506088;
+}
+
+.palette-window-close {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #213259;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.palette-window-close:hover {
+  background: #e2e9ff;
+}
+
+.palette-window-body {
+  padding: 12px 14px;
+  max-height: calc(100vh - var(--menu-bar-height) - 24px);
+  overflow-y: auto;
+}
+
+.settings-palette .controls {
+  margin-top: 0;
 }
 
 .tool-grid {
@@ -509,6 +558,15 @@ canvas {
   cursor: pointer;
 }
 
+.hud-info {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: min(460px, calc(100% - 24px));
+  pointer-events: none;
+  z-index: 120;
+}
+
 .status {
   margin-top: 8px;
   min-height: 16px;
@@ -516,22 +574,19 @@ canvas {
   color: #425279;
 }
 
-.zoom-controls {
+.hud-info .status {
+  margin-top: 0;
+}
+
+.menu-zoom-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 10px;
 }
 
-.zoom-label {
-  font-size: 12px;
-  color: #4d5a7a;
-}
-
-.zoom-group {
+.menu-zoom-actions {
   display: flex;
-  align-items: center;
   gap: 6px;
 }
 
@@ -541,20 +596,12 @@ canvas {
   background: #eef3ff;
   color: #213259;
   font-size: 12px;
-  padding: 4px 8px;
+  padding: 4px 10px;
   cursor: pointer;
 }
 
 .zoom-btn:hover {
   background: #e2e9ff;
-}
-
-.zoom-value {
-  min-width: 52px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: #213259;
 }
 
 .thickness-controls {
@@ -682,84 +729,6 @@ canvas {
   margin-top: 8px;
 }
 
-.debug-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.debug-panel {
-  border: 1px solid #d7e0f4;
-  border-radius: 10px;
-  background: #f7f9ff;
-  padding: 8px;
-}
-
-.debug-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.debug-title {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: #506088;
-}
-
-.debug-close {
-  border: 1px solid #d7e0f4;
-  border-radius: 8px;
-  background: #eef3ff;
-  color: #213259;
-  font-size: 11px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-
-.debug-close:hover {
-  background: #e2e9ff;
-}
-
-.debug-textarea {
-  width: 100%;
-  height: 180px;
-  border: 1px solid #d7e0f4;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #1f2a44;
-  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
-  font-size: 11px;
-  line-height: 1.4;
-  padding: 6px;
-  resize: vertical;
-}
-
-.debug-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.debug-btn {
-  flex: 1;
-  border: 1px solid #d7e0f4;
-  border-radius: 8px;
-  background: #eef3ff;
-  color: #213259;
-  font-size: 11px;
-  padding: 4px 6px;
-  cursor: pointer;
-}
-
-.debug-btn:hover {
-  background: #e2e9ff;
-}
-
 .action-btn {
   flex: 1;
   border: 1px solid #d7e0f4;
@@ -799,8 +768,16 @@ canvas {
 }
 
 @media (max-width: 640px) {
-  .toolbar {
-    width: 240px;
+  .palette-window.tool-palette {
+    width: 228px;
+  }
+
+  .palette-window.settings-palette {
+    width: 252px;
+  }
+
+  .palette-window-body {
+    padding: 10px 11px;
   }
 
   .tool-grid {
@@ -809,5 +786,9 @@ canvas {
 
   .palette {
     grid-template-columns: repeat(4, 1fr);
+  }
+
+  .hud-info {
+    max-width: min(320px, calc(100% - 24px));
   }
 }

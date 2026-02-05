@@ -35,9 +35,11 @@ const gridSettings = signal({
   size: 40,
   snap: false,
 });
-const debugPanelOpen = signal(false);
-const debugJson = signal("");
 const openMenu = signal(null);
+const showToolPalette = signal(true);
+const showSettingsPalette = signal(true);
+const toolPalettePosition = signal({ x: 12, y: 58 });
+const settingsPalettePosition = signal({ x: 324, y: 58 });
 
 const view = {
   scale: 1,
@@ -73,6 +75,7 @@ let pointerStart = { x: 0, y: 0 };
 let rerasterizeTimer = null;
 let panDirty = false;
 let paletteEditIndex = null;
+let draggingPalette = null;
 
 const history = {
   past: [],
@@ -89,6 +92,7 @@ const MAX_FILL_PIXELS = 4_000_000;
 const MAX_FILL_DIM = 8192;
 const GRID_COLOR = "rgba(15, 23, 42, 0.08)";
 const GRID_DOT_COLOR = "rgba(15, 23, 42, 0.12)";
+const PALETTE_GUTTER = 8;
 
 const toolDefs = [
   { id: "straightedge", label: "Straightedge", key: "1" },
@@ -102,6 +106,53 @@ const toolDefs = [
   { id: "paste", label: "Paste Measure", key: "9" },
   { id: "erase", label: "Delete", key: "D" },
 ];
+
+function getPalettePositionSignal(paletteId) {
+  if (paletteId === "tools") return toolPalettePosition;
+  if (paletteId === "settings") return settingsPalettePosition;
+  return null;
+}
+
+function clampPalettePosition(position, size = { width: 0, height: 0 }) {
+  const maxX = Math.max(PALETTE_GUTTER, window.innerWidth - size.width - PALETTE_GUTTER);
+  const maxY = Math.max(PALETTE_GUTTER, window.innerHeight - size.height - PALETTE_GUTTER);
+  return {
+    x: Math.max(PALETTE_GUTTER, Math.min(position.x, maxX)),
+    y: Math.max(PALETTE_GUTTER, Math.min(position.y, maxY)),
+  };
+}
+
+function startPaletteDrag(event, paletteId) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const positionSignal = getPalettePositionSignal(paletteId);
+  if (!positionSignal) return;
+  const paletteWindow = event.currentTarget?.closest?.(".palette-window");
+  draggingPalette = {
+    id: paletteId,
+    offsetX: event.clientX - positionSignal.value.x,
+    offsetY: event.clientY - positionSignal.value.y,
+    width: paletteWindow?.offsetWidth || 0,
+    height: paletteWindow?.offsetHeight || 0,
+  };
+  event.preventDefault();
+}
+
+function handlePaletteDrag(event) {
+  if (!draggingPalette) return;
+  const positionSignal = getPalettePositionSignal(draggingPalette.id);
+  if (!positionSignal) return;
+  positionSignal.value = clampPalettePosition({
+    x: event.clientX - draggingPalette.offsetX,
+    y: event.clientY - draggingPalette.offsetY,
+  }, {
+    width: draggingPalette.width,
+    height: draggingPalette.height,
+  });
+}
+
+function stopPaletteDrag() {
+  draggingPalette = null;
+}
 
 function StampIcon({ shape }) {
   const svgProps = {
@@ -198,6 +249,14 @@ function Toolbar() {
     scheduleRender();
   };
 
+  const toggleToolPalette = (value) => {
+    showToolPalette.value = value;
+  };
+
+  const toggleSettingsPalette = (value) => {
+    showSettingsPalette.value = value;
+  };
+
   const openHoverMenu = (menuId) => {
     openMenu.value = menuId;
   };
@@ -230,6 +289,38 @@ function Toolbar() {
     input.style.height = "1px";
     input.style.pointerEvents = "none";
   };
+
+  const renderPaletteWindow = ({ id, title, className, position, onClose, children }) =>
+    h(
+      "div",
+      {
+        class: `palette-window ${className}`.trim(),
+        style: {
+          left: `${position.x}px`,
+          top: `${position.y}px`,
+        },
+      },
+      h(
+        "div",
+        {
+          class: "palette-window-header",
+          onPointerDown: (event) => startPaletteDrag(event, id),
+        },
+        h("span", { class: "palette-window-title" }, title),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "palette-window-close",
+            onPointerDown: (event) => event.stopPropagation(),
+            onClick: onClose,
+            "aria-label": `Close ${title}`,
+          },
+          "×"
+        )
+      ),
+      h("div", { class: "palette-window-body" }, children)
+    );
 
   return h(
     "div",
@@ -412,282 +503,282 @@ function Toolbar() {
             )
           )
         )
-      )
-    ),
-    h(
-      "div",
-      { class: "toolbar" },
-      h("h1", null, "CAG Toolkit"),
-    h(
-      "div",
-      { class: "tool-grid" },
-      toolDefs.map((def) =>
-        h(
-          "button",
-          {
-            type: "button",
-            class: `tool-btn ${tool.value === def.id ? "active" : ""}`,
-            onClick: () => setTool(def.id),
-          },
-          h("span", null, def.label),
-          h("span", { class: "key" }, def.key)
-        )
-      )
-    ),
-    h(
-      "div",
-      { class: "controls" },
-      h("label", null, "Fill Color"),
-      h(
-        "div",
-        { class: "palette" },
-        palette.value.map((color, index) =>
-          h(
-            "button",
-            {
-              type: "button",
-              class: `swatch ${fillColor.value === color ? "active" : ""}`,
-              style: { backgroundColor: color },
-              onClick: () => setFillColor(color),
-              onDblClick: (event) => {
-                const input = document.getElementById(paletteEditInputId);
-                if (!input) return;
-                paletteEditIndex = index;
-                input.value = color;
-                positionEditPicker(event, input);
-                if (input.showPicker) {
-                  input.showPicker();
-                } else {
-                  input.click();
-                }
-              },
-            },
-            h(
-              "span",
-              {
-                class: "swatch-remove",
-                onClick: (event) => {
-                  event.stopPropagation();
-                  removePaletteColor(color);
-                },
-              },
-              "×"
-            )
-          )
-        ),
-        h(
-          "div",
-          { class: "swatch add" },
-          h("span", { class: "swatch-add-label" }, "+"),
-          h("input", {
-            class: "palette-input",
-            type: "color",
-            onChange: (event) => {
-              addPaletteColor(event.target.value);
-              event.target.blur();
-            },
-          })
-        ),
-        h("input", {
-          id: paletteEditInputId,
-          class: "palette-input edit",
-          type: "color",
-          onChange: (event) => {
-            updatePaletteColor(event.target.value, paletteEditIndex);
-            paletteEditIndex = null;
-            resetEditPicker(event.target);
-            event.target.blur();
-          },
-          onBlur: (event) => {
-            paletteEditIndex = null;
-            resetEditPicker(event.target);
-          },
-        })
-      )
-    ),
-    h(
-      "div",
-      { class: "stamp-controls" },
-      h("span", { class: "stamp-label" }, "Stamp"),
-      h(
-        "div",
-        { class: "stamp-grid" },
-        stampOptions.map((option) =>
-          h(
-            "button",
-            {
-              type: "button",
-              class: `stamp-btn swatch ${stampShape.value === option.id ? "active" : ""}`,
-              onClick: () => setStamp(option.id),
-              "aria-label": option.label,
-              title: option.label,
-            },
-            h(StampIcon, { shape: option.id })
-          )
-        )
       ),
       h(
         "div",
-        { class: "stamp-size" },
-        h("span", { class: "stamp-size-label" }, "Size"),
-        h("input", {
-          type: "range",
-          min: 10,
-          max: 200,
-          step: 5,
-          value: stampSize.value,
-          onInput: (event) => {
-            stampSize.value = Number(event.target.value);
-            scheduleRender();
-          },
-        }),
-        h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
-      )
-    ),
-    h(
-      "div",
-      { class: "thickness-controls" },
-      h("span", { class: "thickness-label" }, "Ink"),
-      h("input", {
-        type: "range",
-        min: 1,
-        max: 8,
-        step: 0.5,
-        value: inkThickness.value,
-        onInput: (event) => {
-          inkThickness.value = Number(event.target.value);
-          scheduleRender();
+        {
+          class: `menu-group ${openMenu.value === "view" ? "open" : ""}`,
+          onMouseEnter: () => openHoverMenu("view"),
+          onMouseLeave: () => closeHoverMenu("view"),
         },
-      }),
-      h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
-    ),
-    h(
-      "div",
-      { class: "alpha-controls" },
-      h("span", { class: "alpha-label" }, "Fill Alpha"),
-      h("input", {
-        type: "range",
-        min: 0,
-        max: 1,
-        step: 0.05,
-        value: fillAlpha.value,
-        onInput: (event) => {
-          fillAlpha.value = Number(event.target.value);
-        },
-      }),
-      h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
-    ),
-    h(
-      "div",
-      { class: "zoom-controls" },
-      h("span", { class: "zoom-label" }, "Zoom"),
-      h(
-        "div",
-        { class: "zoom-group" },
+        h("div", { class: "menu-trigger" }, "View"),
         h(
-          "button",
-          {
-            type: "button",
-            class: "zoom-btn",
-            onClick: () => zoomBy(1 / 1.1),
-          },
-          "-"
-        ),
-        h("span", { class: "zoom-value" }, `${Math.round(zoomValue.value * 100)}%`),
-        h(
-          "button",
-          {
-            type: "button",
-            class: "zoom-btn",
-            onClick: () => zoomBy(1.1),
-          },
-          "+"
-        ),
-        h(
-          "button",
-          {
-            type: "button",
-            class: "zoom-btn",
-            onClick: () => resetZoom(),
-          },
-          "0"
+          "div",
+          { class: "menu-panel" },
+          h(
+            "label",
+            { class: "menu-toggle" },
+            h("input", {
+              type: "checkbox",
+              checked: showToolPalette.value,
+              onChange: (event) => toggleToolPalette(event.target.checked),
+            }),
+            "Tool Palette"
+          ),
+          h(
+            "label",
+            { class: "menu-toggle" },
+            h("input", {
+              type: "checkbox",
+              checked: showSettingsPalette.value,
+              onChange: (event) => toggleSettingsPalette(event.target.checked),
+            }),
+            "Settings Palette"
+          ),
+          h(
+            "label",
+            { class: "menu-toggle" },
+            h("input", {
+              type: "checkbox",
+              checked: showGuides.value,
+              onChange: (event) => toggleGuides(event.target.checked),
+            }),
+            "Show Guides"
+          ),
+          h("div", { class: "menu-divider" }),
+          h(
+            "div",
+            { class: "menu-zoom-row" },
+            h("span", { class: "menu-label" }, "Zoom"),
+            h("span", { class: "menu-slider-value" }, `${Math.round(zoomValue.value * 100)}%`)
+          ),
+          h(
+            "div",
+            { class: "menu-zoom-actions" },
+            h(
+              "button",
+              {
+                type: "button",
+                class: "zoom-btn",
+                onClick: () => runMenuAction(() => zoomBy(1 / 1.1)),
+                title: "Zoom Out (-)",
+              },
+              "-"
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                class: "zoom-btn",
+                onClick: () => runMenuAction(() => zoomBy(1.1)),
+                title: "Zoom In (+)",
+              },
+              "+"
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                class: "zoom-btn",
+                onClick: () => runMenuAction(() => resetZoom()),
+                title: "Reset Zoom (0)",
+              },
+              "0"
+            )
+          )
         )
       )
     ),
-    h(
-      "div",
-      { class: "debug-controls" },
-      debugPanelOpen.value
-        ? h(
+    showToolPalette.value
+      ? renderPaletteWindow({
+          id: "tools",
+          title: "Tools",
+          className: "tool-palette",
+          position: toolPalettePosition.value,
+          onClose: () => toggleToolPalette(false),
+          children: h(
             "div",
-            { class: "debug-panel" },
-            h(
-              "div",
-              { class: "debug-header" },
-              h("span", { class: "debug-title" }, "Diagram JSON"),
+            { class: "tool-grid" },
+            toolDefs.map((def) =>
               h(
                 "button",
                 {
                   type: "button",
-                  class: "debug-close",
-                  onClick: () => toggleDebugPanel(),
+                  class: `tool-btn ${tool.value === def.id ? "active" : ""}`,
+                  onClick: () => setTool(def.id),
                 },
-                "Close"
-              )
-            ),
-            h("textarea", {
-              id: "debug-json",
-              class: "debug-textarea",
-              readOnly: true,
-              spellcheck: false,
-              value: debugJson.value,
-            }),
-            h(
-              "div",
-              { class: "debug-actions" },
-              h(
-                "button",
-                {
-                  type: "button",
-                  class: "debug-btn",
-                  onClick: () => refreshDebugJson(),
-                },
-                "Refresh"
-              ),
-              h(
-                "button",
-                {
-                  type: "button",
-                  class: "debug-btn",
-                  onClick: () => copyDebugJson(),
-                },
-                "Copy JSON"
+                h("span", null, def.label),
+                h("span", { class: "key" }, def.key)
               )
             )
-          )
-        : null
-    ),
+          ),
+        })
+      : null,
+    showSettingsPalette.value
+      ? renderPaletteWindow({
+          id: "settings",
+          title: "Tool Settings",
+          className: "settings-palette",
+          position: settingsPalettePosition.value,
+          onClose: () => toggleSettingsPalette(false),
+          children: [
+            h(
+              "div",
+              { class: "controls" },
+              h("label", null, "Fill Color"),
+              h(
+                "div",
+                { class: "palette" },
+                palette.value.map((color, index) =>
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      class: `swatch ${fillColor.value === color ? "active" : ""}`,
+                      style: { backgroundColor: color },
+                      onClick: () => setFillColor(color),
+                      onDblClick: (event) => {
+                        const input = document.getElementById(paletteEditInputId);
+                        if (!input) return;
+                        paletteEditIndex = index;
+                        input.value = color;
+                        positionEditPicker(event, input);
+                        if (input.showPicker) {
+                          input.showPicker();
+                        } else {
+                          input.click();
+                        }
+                      },
+                    },
+                    h(
+                      "span",
+                      {
+                        class: "swatch-remove",
+                        onClick: (event) => {
+                          event.stopPropagation();
+                          removePaletteColor(color);
+                        },
+                      },
+                      "×"
+                    )
+                  )
+                ),
+                h(
+                  "div",
+                  { class: "swatch add" },
+                  h("span", { class: "swatch-add-label" }, "+"),
+                  h("input", {
+                    class: "palette-input",
+                    type: "color",
+                    onChange: (event) => {
+                      addPaletteColor(event.target.value);
+                      event.target.blur();
+                    },
+                  })
+                ),
+                h("input", {
+                  id: paletteEditInputId,
+                  class: "palette-input edit",
+                  type: "color",
+                  onChange: (event) => {
+                    updatePaletteColor(event.target.value, paletteEditIndex);
+                    paletteEditIndex = null;
+                    resetEditPicker(event.target);
+                    event.target.blur();
+                  },
+                  onBlur: (event) => {
+                    paletteEditIndex = null;
+                    resetEditPicker(event.target);
+                  },
+                })
+              )
+            ),
+            h(
+              "div",
+              { class: "stamp-controls" },
+              h("span", { class: "stamp-label" }, "Stamp"),
+              h(
+                "div",
+                { class: "stamp-grid" },
+                stampOptions.map((option) =>
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      class: `stamp-btn swatch ${stampShape.value === option.id ? "active" : ""}`,
+                      onClick: () => setStamp(option.id),
+                      "aria-label": option.label,
+                      title: option.label,
+                    },
+                    h(StampIcon, { shape: option.id })
+                  )
+                )
+              ),
+              h(
+                "div",
+                { class: "stamp-size" },
+                h("span", { class: "stamp-size-label" }, "Size"),
+                h("input", {
+                  type: "range",
+                  min: 10,
+                  max: 200,
+                  step: 5,
+                  value: stampSize.value,
+                  onInput: (event) => {
+                    stampSize.value = Number(event.target.value);
+                    scheduleRender();
+                  },
+                }),
+                h("span", { class: "stamp-size-value" }, `${stampSize.value}px`)
+              )
+            ),
+            h(
+              "div",
+              { class: "thickness-controls" },
+              h("span", { class: "thickness-label" }, "Ink"),
+              h("input", {
+                type: "range",
+                min: 1,
+                max: 8,
+                step: 0.5,
+                value: inkThickness.value,
+                onInput: (event) => {
+                  inkThickness.value = Number(event.target.value);
+                  scheduleRender();
+                },
+              }),
+              h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
+            ),
+            h(
+              "div",
+              { class: "alpha-controls" },
+              h("span", { class: "alpha-label" }, "Fill Alpha"),
+              h("input", {
+                type: "range",
+                min: 0,
+                max: 1,
+                step: 0.05,
+                value: fillAlpha.value,
+                onInput: (event) => {
+                  fillAlpha.value = Number(event.target.value);
+                },
+              }),
+              h("span", { class: "alpha-value" }, `${Math.round(fillAlpha.value * 100)}%`)
+            )
+          ],
+        })
+      : null,
     h(
       "div",
-      { class: "guide-controls" },
+      { class: "hud-info" },
+      h("div", { class: "status" }, status.value),
       h(
-        "label",
-        { class: "guide-toggle" },
-        h("input", {
-          type: "checkbox",
-          checked: showGuides.value,
-          onChange: (event) => toggleGuides(event.target.checked),
-        }),
-        "Show Guides"
+        "div",
+        { class: "hint" },
+        "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears. +/- zoom. 0 resets zoom."
       )
-    ),
-    h("div", { class: "status" }, status.value),
-    h(
-      "div",
-      { class: "hint" },
-      "Space or middle-drag to pan. Wheel to zoom. Z/Y undo/redo. X clears. J shows JSON."
     )
-  ));
+  );
 }
 
 render(h(Toolbar), document.getElementById("ui"));
@@ -708,34 +799,8 @@ function setStatus(message, timeout = 1800) {
   }, timeout);
 }
 
-function buildDebugJson() {
-  return JSON.stringify(snapshotForShare(), null, 2);
-}
-
 function buildSharePayload() {
   return JSON.stringify(snapshotForShare());
-}
-
-function refreshDebugJson() {
-  debugJson.value = buildDebugJson();
-}
-
-function toggleDebugPanel() {
-  debugPanelOpen.value = !debugPanelOpen.value;
-  if (debugPanelOpen.value) {
-    refreshDebugJson();
-  }
-}
-
-async function copyDebugJson() {
-  if (!debugJson.value) return;
-  try {
-    await copyTextToClipboard(debugJson.value);
-    setStatus("Debug JSON copied.");
-  } catch (error) {
-    console.warn("Clipboard copy failed", error);
-    setStatus("Could not copy debug JSON.");
-  }
 }
 
 function encodeBase64Url(text) {
@@ -3591,10 +3656,6 @@ function handleKeyDown(event) {
     return;
   }
   if (key === "escape") {
-    if (debugPanelOpen.value) {
-      debugPanelOpen.value = false;
-      return;
-    }
     toolState = { step: 0 };
     hoverSnap = null;
     scheduleRender();
@@ -3614,17 +3675,17 @@ function handleKeyDown(event) {
   if (key === "x") {
     clearAll();
   }
-  if (key === "j") {
-    toggleDebugPanel();
-  }
-  if (key === "0") {
+  if ((key === "0" && !event.shiftKey) || event.code === "Numpad0") {
     resetZoom();
+    event.preventDefault();
   }
-  if (key === "+" || key === "=") {
+  if (key === "+" || key === "=" || event.code === "NumpadAdd") {
     zoomBy(1.1);
+    event.preventDefault();
   }
-  if (key === "-") {
+  if (key === "-" || event.code === "NumpadSubtract") {
     zoomBy(1 / 1.1);
+    event.preventDefault();
   }
 }
 
@@ -3639,6 +3700,9 @@ canvas.addEventListener("pointermove", handlePointerMove);
 canvas.addEventListener("pointerup", handlePointerUp);
 canvas.addEventListener("pointercancel", handlePointerUp);
 canvas.addEventListener("wheel", handleWheel, { passive: false });
+window.addEventListener("pointermove", handlePaletteDrag);
+window.addEventListener("pointerup", stopPaletteDrag);
+window.addEventListener("pointercancel", stopPaletteDrag);
 window.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keyup", handleKeyUp);
 window.addEventListener("resize", scheduleRender);
