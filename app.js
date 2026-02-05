@@ -16,6 +16,7 @@ import {
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const APP_TITLE = "Computer Aided Geometry";
+const DEFAULT_DRAWING_FILE_NAME = "cag-drawing.json";
 document.title = APP_TITLE;
 
 const tool = signal("straightedge");
@@ -51,12 +52,23 @@ const gridSettings = signal({
 });
 const openMenu = signal(null);
 const showInfoDialog = signal(true);
+const showSaveDialog = signal(false);
+const saveDialogFileName = signal(DEFAULT_DRAWING_FILE_NAME);
 const showToolPalette = signal(true);
 const showFillPalette = signal(false);
 const showStampPalette = signal(false);
 const toolPalettePosition = signal({ x: 12, y: 58 });
 const fillPalettePosition = signal({ x: 324, y: 58 });
 const stampPalettePosition = signal({ x: 632, y: 58 });
+const toolHelpTick = signal(0);
+const menuHoverHelp = signal({
+  file: "",
+  edit: "",
+  tool: "",
+  settings: "",
+  grid: "",
+  view: "",
+});
 
 const view = {
   scale: 1,
@@ -93,6 +105,7 @@ let rerasterizeTimer = null;
 let panDirty = false;
 let paletteEditIndex = null;
 let draggingPalette = null;
+let currentDrawingFileName = DEFAULT_DRAWING_FILE_NAME;
 
 const history = {
   past: [],
@@ -124,6 +137,19 @@ const toolDefs = [
   { id: "erase", label: "Delete", key: "D", Icon: Eraser },
 ];
 
+const TOOL_MENU_HELP = {
+  straightedge: "Draws an infinite line through two selected points.",
+  segment: "Draws a finite line segment between two selected points.",
+  compass: "Draws a circle from a selected center and radius point.",
+  arc: "Draws an arc from center, start, and end points.",
+  ink: "Inks a visible span on a line, segment, or circle.",
+  fill: "Fills an enclosed region bounded by inked edges.",
+  stamp: "Stamps the selected shape at the clicked location.",
+  copy: "Copies a distance from a segment, circle radius, or two points.",
+  paste: "Places the copied distance as a measurement arc from a center point.",
+  erase: "Deletes a primitive, ink segment, or fill region.",
+};
+
 function ToolIcon({ Icon, size = 18, className = "tool-icon" }) {
   return h(Icon, {
     size,
@@ -132,6 +158,64 @@ function ToolIcon({ Icon, size = 18, className = "tool-icon" }) {
     "aria-hidden": "true",
     focusable: "false",
   });
+}
+
+function bumpToolHelpTick() {
+  toolHelpTick.value += 1;
+}
+
+const DEFAULT_MENU_HELP = {
+  file: "Manage drawings: save or load JSON, export PNG, share, or open info.",
+  edit: "Undo, redo, or clear the drawing.",
+  tool: "Choose the active drawing tool.",
+  settings: "Adjust fill colors, stamp setup, ink thickness, and fill alpha.",
+  grid: "Configure grid visibility, snap, size, pattern, and style.",
+  view: "Toggle palettes and guides, then control zoom.",
+};
+
+function setMenuHoverHelp(menuId, text) {
+  if (!menuId) return;
+  const prev = menuHoverHelp.value;
+  if (prev[menuId] === text) return;
+  menuHoverHelp.value = { ...prev, [menuId]: text };
+}
+
+function clearMenuHoverHelp(menuId) {
+  if (!menuId) return;
+  const prev = menuHoverHelp.value;
+  if (!prev[menuId]) return;
+  menuHoverHelp.value = { ...prev, [menuId]: "" };
+}
+
+function withMenuHelp(menuId, text, props = {}) {
+  const nextProps = { ...props };
+  const onMouseEnter = nextProps.onMouseEnter;
+  const onMouseLeave = nextProps.onMouseLeave;
+  const onFocus = nextProps.onFocus;
+  const onBlur = nextProps.onBlur;
+  nextProps.onMouseEnter = (event) => {
+    setMenuHoverHelp(menuId, text);
+    onMouseEnter?.(event);
+  };
+  nextProps.onMouseLeave = (event) => {
+    onMouseLeave?.(event);
+  };
+  nextProps.onFocus = (event) => {
+    setMenuHoverHelp(menuId, text);
+    onFocus?.(event);
+  };
+  nextProps.onBlur = (event) => {
+    onBlur?.(event);
+  };
+  return nextProps;
+}
+
+function getMenuHelpText(menuId) {
+  return menuHoverHelp.value[menuId] || DEFAULT_MENU_HELP[menuId] || "";
+}
+
+function renderMenuHelp(menuId) {
+  return h("p", { class: "menu-help-block", role: "note" }, getMenuHelpText(menuId));
 }
 
 function getPalettePositionSignal(paletteId) {
@@ -297,7 +381,18 @@ function Toolbar() {
     showInfoDialog.value = false;
   };
 
+  const closeSaveDialog = () => {
+    showSaveDialog.value = false;
+  };
+
+  const handleSaveDialogSubmit = () => {
+    confirmSaveDialog();
+  };
+
   const openHoverMenu = (menuId) => {
+    if (openMenu.value && openMenu.value !== menuId) {
+      clearMenuHoverHelp(openMenu.value);
+    }
     openMenu.value = menuId;
   };
 
@@ -305,11 +400,63 @@ function Toolbar() {
     if (openMenu.value === menuId) {
       openMenu.value = null;
     }
+    clearMenuHoverHelp(menuId);
   };
 
   const runMenuAction = (fn) => {
     fn();
+    if (openMenu.value) {
+      clearMenuHoverHelp(openMenu.value);
+    }
     openMenu.value = null;
+  };
+
+  const getToolHelpText = () => {
+    toolHelpTick.value;
+    if (tool.value === "straightedge") {
+      return toolState.anchor
+        ? "Click to select another point on the line."
+        : "Click to select a point on the line.";
+    }
+    if (tool.value === "segment") {
+      return toolState.anchor
+        ? "Click to select the end point of the line segment."
+        : "Click to select the start point of the line segment.";
+    }
+    if (tool.value === "compass") {
+      return toolState.center
+        ? "Click to select a point on the circle's circumference."
+        : "Click to select the circle's center point.";
+    }
+    if (tool.value === "arc") {
+      if (!toolState.center) return "Click to select the arc's center point.";
+      if (!toolState.start) return "Click to select the arc's start point on the circumference.";
+      return "Click to select the arc's end point on the circumference.";
+    }
+    if (tool.value === "ink") {
+      return "Click a line, segment, or circle to ink that span.";
+    }
+    if (tool.value === "fill") {
+      return "Click inside an enclosed ink region to fill it.";
+    }
+    if (tool.value === "stamp") {
+      return "Click to place the current stamp at that point.";
+    }
+    if (tool.value === "copy") {
+      return toolState.p0
+        ? "Click to select a second point and copy that distance."
+        : "Click a segment/circle to copy its measure, or click to select the first point.";
+    }
+    if (tool.value === "paste") {
+      if (!measureDistance.value) return "Copy a measure first using Copy Measure.";
+      return toolState.center
+        ? "Click to set the direction for the copied measure."
+        : "Click to select the center point for the copied measure.";
+    }
+    if (tool.value === "erase") {
+      return "Click geometry, ink, or fill to delete it.";
+    }
+    return "";
   };
 
   const positionEditPicker = (event, input) => {
@@ -541,6 +688,30 @@ function Toolbar() {
             {
               type: "button",
               class: "menu-action",
+              ...withMenuHelp("file", "Choose a filename and download the current drawing as JSON."),
+              onClick: () => runMenuAction(() => saveDrawingJson()),
+            },
+            h("span", null, "Save JSON"),
+            h("span", { class: "menu-shortcut" }, "⌘/Ctrl+S")
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "menu-action",
+              ...withMenuHelp("file", "Load a local JSON drawing file and render it on the canvas."),
+              onClick: () => runMenuAction(() => loadDrawingJson()),
+            },
+            h("span", null, "Load JSON"),
+            h("span", { class: "menu-shortcut" }, "⌘/Ctrl+O")
+          ),
+          h("div", { class: "menu-divider" }),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "menu-action",
+              ...withMenuHelp("file", "Export the drawing as a PNG image."),
               onClick: () => runMenuAction(() => downloadPng()),
             },
             h("span", null, "Download PNG")
@@ -550,6 +721,7 @@ function Toolbar() {
             {
               type: "button",
               class: "menu-action",
+              ...withMenuHelp("file", "Copy a shareable URL that includes the current drawing."),
               onClick: () => runMenuAction(() => copyShareUrl()),
             },
             h("span", null, "Share")
@@ -560,10 +732,13 @@ function Toolbar() {
             {
               type: "button",
               class: "menu-action",
+              ...withMenuHelp("file", "Open the quick help and shortcut reference dialog."),
               onClick: () => runMenuAction(() => openInfoDialog()),
             },
             h("span", null, "Info")
-          )
+          ),
+          h("div", { class: "menu-divider" }),
+          renderMenuHelp("file")
         )
       ),
       h(
@@ -579,22 +754,39 @@ function Toolbar() {
           { class: "menu-panel" },
           h(
             "button",
-            { type: "button", class: "menu-action", onClick: () => runMenuAction(() => undo()) },
+            {
+              type: "button",
+              class: "menu-action",
+              ...withMenuHelp("edit", "Undo the most recent change."),
+              onClick: () => runMenuAction(() => undo()),
+            },
             h("span", null, "Undo"),
             h("span", { class: "menu-shortcut" }, "Z")
           ),
           h(
             "button",
-            { type: "button", class: "menu-action", onClick: () => runMenuAction(() => redo()) },
+            {
+              type: "button",
+              class: "menu-action",
+              ...withMenuHelp("edit", "Redo the next change in history."),
+              onClick: () => runMenuAction(() => redo()),
+            },
             h("span", null, "Redo"),
             h("span", { class: "menu-shortcut" }, "Y")
           ),
           h(
             "button",
-            { type: "button", class: "menu-action danger", onClick: () => runMenuAction(() => clearAll()) },
+            {
+              type: "button",
+              class: "menu-action danger",
+              ...withMenuHelp("edit", "Clear all primitives, ink, and fills from the canvas."),
+              onClick: () => runMenuAction(() => clearAll()),
+            },
             h("span", null, "Clear"),
             h("span", { class: "menu-shortcut" }, "X")
-          )
+          ),
+          h("div", { class: "menu-divider" }),
+          renderMenuHelp("edit")
         )
       ),
       h(
@@ -614,6 +806,7 @@ function Toolbar() {
               {
                 type: "button",
                 class: `menu-action ${tool.value === def.id ? "selected" : ""}`,
+                ...withMenuHelp("tool", TOOL_MENU_HELP[def.id] || `Switch to ${def.label}.`),
                 onClick: () => runMenuAction(() => setTool(def.id)),
                 title: def.label,
               },
@@ -625,7 +818,9 @@ function Toolbar() {
               ),
               h("span", { class: "menu-shortcut" }, def.key)
             )
-          )
+          ),
+          h("div", { class: "menu-divider" }),
+          renderMenuHelp("tool")
         )
       ),
       h(
@@ -639,15 +834,40 @@ function Toolbar() {
         h(
           "div",
           { class: "menu-panel menu-panel-settings" },
-          h("div", { class: "menu-section-label" }, "Fill Colors"),
-          renderFillColorGrid(),
+          h(
+            "div",
+            { class: "menu-section-label", ...withMenuHelp("settings", "Choose colors used by the Fill tool.") },
+            "Fill Colors"
+          ),
+          h(
+            "div",
+            withMenuHelp(
+              "settings",
+              "Pick a fill color. Double-click a swatch to edit, click x to remove, and + to add."
+            ),
+            renderFillColorGrid()
+          ),
           h("div", { class: "menu-divider" }),
-          h("div", { class: "menu-section-label" }, "Stamp"),
-          renderStampControls(),
+          h(
+            "div",
+            { class: "menu-section-label", ...withMenuHelp("settings", "Configure the stamp shape and size.") },
+            "Stamp"
+          ),
+          h("div", withMenuHelp("settings", "Choose stamp shape and adjust stamp size."), renderStampControls()),
           h("div", { class: "menu-divider" }),
-          renderInkThicknessControl(),
+          h(
+            "div",
+            withMenuHelp("settings", "Adjust the stroke thickness used by the Ink tool."),
+            renderInkThicknessControl()
+          ),
           h("div", { class: "menu-divider" }),
-          renderFillAlphaControl()
+          h(
+            "div",
+            withMenuHelp("settings", "Adjust opacity for newly created fill regions."),
+            renderFillAlphaControl()
+          ),
+          h("div", { class: "menu-divider" }),
+          renderMenuHelp("settings")
         )
       ),
       h(
@@ -663,7 +883,7 @@ function Toolbar() {
           { class: "menu-panel menu-panel-grid" },
           h(
             "label",
-            { class: "menu-toggle" },
+            { class: "menu-toggle", ...withMenuHelp("grid", "Toggle grid visibility on the canvas.") },
             h("input", {
               type: "checkbox",
               checked: gridSettings.value.show,
@@ -673,7 +893,7 @@ function Toolbar() {
           ),
           h(
             "label",
-            { class: "menu-toggle" },
+            { class: "menu-toggle", ...withMenuHelp("grid", "Snap new points to the current grid intersections.") },
             h("input", {
               type: "checkbox",
               checked: gridSettings.value.snap,
@@ -684,7 +904,7 @@ function Toolbar() {
           h("div", { class: "menu-divider" }),
           h(
             "div",
-            { class: "menu-slider" },
+            { class: "menu-slider", ...withMenuHelp("grid", "Set spacing between grid steps.") },
             h("span", { class: "menu-label" }, "Size"),
             h("input", {
               type: "range",
@@ -699,7 +919,12 @@ function Toolbar() {
           h("div", { class: "menu-divider" }),
           h(
             "div",
-            { class: "menu-item has-submenu", tabIndex: 0, role: "menuitem" },
+            {
+              class: "menu-item has-submenu",
+              tabIndex: 0,
+              role: "menuitem",
+              ...withMenuHelp("grid", "Choose the geometric pattern used for the grid."),
+            },
             h("span", null, "Pattern"),
             h("span", { class: "submenu-caret" }, ">"),
             h(
@@ -710,6 +935,7 @@ function Toolbar() {
                 {
                   type: "button",
                   class: `menu-action ${gridSettings.value.pattern === "square" ? "selected" : ""}`,
+                  ...withMenuHelp("grid", "Use a square grid pattern."),
                   onClick: () => runMenuAction(() => updateGrid({ pattern: "square" })),
                 },
                 h("span", null, "Square")
@@ -719,6 +945,7 @@ function Toolbar() {
                 {
                   type: "button",
                   class: `menu-action ${gridSettings.value.pattern === "hex" ? "selected" : ""}`,
+                  ...withMenuHelp("grid", "Use a hexagonal grid pattern."),
                   onClick: () => runMenuAction(() => updateGrid({ pattern: "hex" })),
                 },
                 h("span", null, "Hex")
@@ -728,6 +955,7 @@ function Toolbar() {
                 {
                   type: "button",
                   class: `menu-action ${gridSettings.value.pattern === "triangle" ? "selected" : ""}`,
+                  ...withMenuHelp("grid", "Use a triangular grid pattern."),
                   onClick: () => runMenuAction(() => updateGrid({ pattern: "triangle" })),
                 },
                 h("span", null, "Triangle")
@@ -736,7 +964,12 @@ function Toolbar() {
           ),
           h(
             "div",
-            { class: "menu-item has-submenu", tabIndex: 0, role: "menuitem" },
+            {
+              class: "menu-item has-submenu",
+              tabIndex: 0,
+              role: "menuitem",
+              ...withMenuHelp("grid", "Choose whether grid marks render as lines or dots."),
+            },
             h("span", null, "Style"),
             h("span", { class: "submenu-caret" }, ">"),
             h(
@@ -747,6 +980,7 @@ function Toolbar() {
                 {
                   type: "button",
                   class: `menu-action ${gridSettings.value.style === "lines" ? "selected" : ""}`,
+                  ...withMenuHelp("grid", "Render the grid as lines."),
                   onClick: () => runMenuAction(() => updateGrid({ style: "lines" })),
                 },
                 h("span", null, "Lines")
@@ -756,12 +990,15 @@ function Toolbar() {
                 {
                   type: "button",
                   class: `menu-action ${gridSettings.value.style === "dots" ? "selected" : ""}`,
+                  ...withMenuHelp("grid", "Render the grid as dots."),
                   onClick: () => runMenuAction(() => updateGrid({ style: "dots" })),
                 },
                 h("span", null, "Dots")
               )
             )
-          )
+          ),
+          h("div", { class: "menu-divider" }),
+          renderMenuHelp("grid")
         )
       ),
       h(
@@ -777,7 +1014,7 @@ function Toolbar() {
           { class: "menu-panel" },
           h(
             "label",
-            { class: "menu-toggle" },
+            { class: "menu-toggle", ...withMenuHelp("view", "Show or hide the floating Tool Palette window.") },
             h("input", {
               type: "checkbox",
               checked: showToolPalette.value,
@@ -787,7 +1024,7 @@ function Toolbar() {
           ),
           h(
             "label",
-            { class: "menu-toggle" },
+            { class: "menu-toggle", ...withMenuHelp("view", "Show or hide the floating Fill Colors palette.") },
             h("input", {
               type: "checkbox",
               checked: showFillPalette.value,
@@ -797,7 +1034,7 @@ function Toolbar() {
           ),
           h(
             "label",
-            { class: "menu-toggle" },
+            { class: "menu-toggle", ...withMenuHelp("view", "Show or hide the floating Stamp palette.") },
             h("input", {
               type: "checkbox",
               checked: showStampPalette.value,
@@ -807,7 +1044,7 @@ function Toolbar() {
           ),
           h(
             "label",
-            { class: "menu-toggle" },
+            { class: "menu-toggle", ...withMenuHelp("view", "Toggle guide geometry and intersection markers.") },
             h("input", {
               type: "checkbox",
               checked: showGuides.value,
@@ -818,7 +1055,7 @@ function Toolbar() {
           h("div", { class: "menu-divider" }),
           h(
             "div",
-            { class: "menu-zoom-row" },
+            { class: "menu-zoom-row", ...withMenuHelp("view", "Shows the current zoom percentage.") },
             h("span", { class: "menu-label" }, "Zoom"),
             h("span", { class: "menu-slider-value" }, `${Math.round(zoomValue.value * 100)}%`)
           ),
@@ -830,6 +1067,7 @@ function Toolbar() {
               {
                 type: "button",
                 class: "zoom-btn",
+                ...withMenuHelp("view", "Zoom out."),
                 onClick: () => runMenuAction(() => zoomBy(1 / 1.1)),
                 title: "Zoom Out (-)",
               },
@@ -840,6 +1078,7 @@ function Toolbar() {
               {
                 type: "button",
                 class: "zoom-btn",
+                ...withMenuHelp("view", "Zoom in."),
                 onClick: () => runMenuAction(() => zoomBy(1.1)),
                 title: "Zoom In (+)",
               },
@@ -850,12 +1089,15 @@ function Toolbar() {
               {
                 type: "button",
                 class: "zoom-btn",
+                ...withMenuHelp("view", "Reset zoom to 100% and center pan."),
                 onClick: () => runMenuAction(() => resetZoom()),
                 title: "Reset Zoom (0)",
               },
               "0"
             )
-          )
+          ),
+          h("div", { class: "menu-divider" }),
+          renderMenuHelp("view")
         )
       )
     ),
@@ -868,20 +1110,25 @@ function Toolbar() {
           onClose: () => toggleToolPalette(false),
           children: h(
             "div",
-            { class: "tool-grid" },
-            toolDefs.map((def) =>
-              h(
-                "button",
-                {
-                  type: "button",
-                  class: `tool-btn ${tool.value === def.id ? "active" : ""}`,
-                  onClick: () => setTool(def.id),
-                  title: `${def.label} (${def.key})`,
-                  "aria-label": `${def.label} (${def.key})`,
-                },
-                h(ToolIcon, { Icon: def.Icon, size: 20 })
+            { class: "tool-palette-content" },
+            h(
+              "div",
+              { class: "tool-grid" },
+              toolDefs.map((def) =>
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: `tool-btn ${tool.value === def.id ? "active" : ""}`,
+                    onClick: () => setTool(def.id),
+                    title: `${def.label} (${def.key})`,
+                    "aria-label": `${def.label} (${def.key})`,
+                  },
+                  h(ToolIcon, { Icon: def.Icon, size: 20 })
+                )
               )
-            )
+            ),
+            h("p", { class: "tool-help-text" }, getToolHelpText())
           ),
         })
       : null,
@@ -973,6 +1220,90 @@ function Toolbar() {
           )
         )
       : null,
+    showSaveDialog.value
+      ? h(
+          "div",
+          {
+            class: "info-overlay save-overlay",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-labelledby": "save-title",
+            onPointerDown: (event) => {
+              if (event.target === event.currentTarget) {
+                closeSaveDialog();
+              }
+            },
+          },
+          h(
+            "div",
+            { class: "info-popup save-popup" },
+            h(
+              "div",
+              { class: "info-header" },
+              h("h2", { id: "save-title", class: "info-title" }, "Save Drawing"),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "info-close",
+                  onClick: () => closeSaveDialog(),
+                  "aria-label": "Close save dialog",
+                },
+                "×"
+              )
+            ),
+            h("p", { class: "info-text save-text" }, "Choose a filename for the JSON download."),
+            h(
+              "div",
+              { class: "save-field" },
+              h("label", { class: "save-label", for: "save-file-name" }, "Filename"),
+              h("input", {
+                id: "save-file-name",
+                class: "save-input",
+                type: "text",
+                value: saveDialogFileName.value,
+                spellCheck: false,
+                autoComplete: "off",
+                onInput: (event) => {
+                  saveDialogFileName.value = event.target.value;
+                },
+                onKeyDown: (event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    handleSaveDialogSubmit();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeSaveDialog();
+                  }
+                },
+              })
+            ),
+            h(
+              "div",
+              { class: "info-actions save-actions" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "save-btn save-btn-secondary",
+                  onClick: () => closeSaveDialog(),
+                },
+                "Cancel"
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "info-btn",
+                  onClick: () => handleSaveDialogSubmit(),
+                },
+                "Save"
+              )
+            )
+          )
+        )
+      : null,
     h(
       "div",
       { class: "hud-info" },
@@ -987,6 +1318,7 @@ function setTool(id) {
   tool.value = id;
   toolState = { step: 0 };
   hoverSnap = null;
+  bumpToolHelpTick();
   scheduleRender();
 }
 
@@ -1001,6 +1333,92 @@ function setStatus(message, timeout = 1800) {
 
 function buildSharePayload() {
   return JSON.stringify(snapshotForShare());
+}
+
+function normalizeDrawingFileName(name) {
+  const fallback = currentDrawingFileName || DEFAULT_DRAWING_FILE_NAME;
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  const raw = trimmed || fallback;
+  const noPath = raw.replace(/[/\\]/g, "-");
+  const cleaned = noPath.replace(/[\u0000-\u001f:*?"<>|]/g, "-").trim();
+  const baseName = cleaned || DEFAULT_DRAWING_FILE_NAME;
+  if (/\.json$/i.test(baseName)) return baseName;
+  return `${baseName}.json`;
+}
+
+function extractDrawingSnapshot(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Drawing JSON must contain an object.");
+  }
+  if (payload.format === "cag-drawing" && payload.state && typeof payload.state === "object") {
+    return payload.state;
+  }
+  return payload;
+}
+
+function saveDrawingJsonToFileName(fileName) {
+  const payload = JSON.stringify(snapshotForShare(), null, 2);
+  const blob = new Blob([payload], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  currentDrawingFileName = fileName;
+  setStatus(`Saved ${fileName}`);
+}
+
+function openSaveDialog() {
+  saveDialogFileName.value = currentDrawingFileName || DEFAULT_DRAWING_FILE_NAME;
+  showSaveDialog.value = true;
+  requestAnimationFrame(() => {
+    const input = document.getElementById("save-file-name");
+    if (!input) return;
+    input.focus();
+    input.select();
+  });
+}
+
+function confirmSaveDialog() {
+  const fileName = normalizeDrawingFileName(saveDialogFileName.value);
+  saveDialogFileName.value = fileName;
+  saveDrawingJsonToFileName(fileName);
+  showSaveDialog.value = false;
+}
+
+function saveDrawingJson() {
+  openSaveDialog();
+}
+
+async function loadDrawingJsonFromFile(file) {
+  const text = await file.text();
+  const parsed = JSON.parse(text);
+  const snap = extractDrawingSnapshot(parsed);
+  restoreShareState(snap);
+  currentDrawingFileName = normalizeDrawingFileName(file.name);
+  setStatus(`Loaded ${currentDrawingFileName}`);
+}
+
+function loadDrawingJson() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.addEventListener(
+    "change",
+    async () => {
+      const [file] = input.files || [];
+      if (!file) return;
+      try {
+        await loadDrawingJsonFromFile(file);
+      } catch (error) {
+        console.warn("Drawing JSON load failed", error);
+        setStatus("Could not load drawing JSON.");
+      }
+    },
+    { once: true }
+  );
+  input.click();
 }
 
 function encodeBase64Url(text) {
@@ -1699,6 +2117,9 @@ function restoreShareState(snap) {
     ? snap.nextFillId
     : computeNextId(state.fills);
   measureDistance.value = snap.measureDistance ?? null;
+  toolState = { step: 0 };
+  hoverSnap = null;
+  bumpToolHelpTick();
   history.past = [];
   history.future = [];
   recomputeIntersections();
@@ -3649,6 +4070,7 @@ function handlePointerDown(event) {
       if (dist(toolState.center, target) < 1) {
         setStatus("Compass radius too small.");
         toolState = { step: 0 };
+        bumpToolHelpTick();
         return;
       }
       commitHistory();
@@ -3670,6 +4092,7 @@ function handlePointerDown(event) {
       if (dist(toolState.anchor, target) < 1) {
         setStatus("Straightedge needs two distinct points.");
         toolState = { step: 0 };
+        bumpToolHelpTick();
         return;
       }
       commitHistory();
@@ -3691,6 +4114,7 @@ function handlePointerDown(event) {
       if (dist(toolState.anchor, target) < 1) {
         setStatus("Line segment needs two distinct points.");
         toolState = { step: 0 };
+        bumpToolHelpTick();
         return;
       }
       commitHistory();
@@ -3713,6 +4137,7 @@ function handlePointerDown(event) {
       if (radius < 1) {
         setStatus("Arc radius too small.");
         toolState = { step: 0 };
+        bumpToolHelpTick();
         return;
       }
       toolState.start = target;
@@ -3722,6 +4147,7 @@ function handlePointerDown(event) {
       if (radius < 1) {
         setStatus("Arc radius too small.");
         toolState = { step: 0 };
+        bumpToolHelpTick();
         return;
       }
       const angles = computeArcAngles(toolState.center, toolState.start, target, radius);
@@ -3770,6 +4196,7 @@ function handlePointerDown(event) {
       measureDistance.value = dist(hit.c, hit.rp);
       toolState = { step: 0 };
       setStatus("Circle radius copied.");
+      bumpToolHelpTick();
       return;
     }
     if (hit?.type === "segment") {
@@ -3777,6 +4204,7 @@ function handlePointerDown(event) {
       measureDistance.value = dist(hit.p0, hit.p1);
       toolState = { step: 0 };
       setStatus("Segment length copied.");
+      bumpToolHelpTick();
       return;
     }
     if (!toolState.p0) {
@@ -3818,6 +4246,7 @@ function handlePointerDown(event) {
     }
   }
 
+  bumpToolHelpTick();
   scheduleRender();
 }
 
@@ -3841,6 +4270,24 @@ function handleWheel(event) {
 
 function handleKeyDown(event) {
   const key = event.key.toLowerCase();
+  const withCommand = event.metaKey || event.ctrlKey;
+  if (withCommand && !event.altKey) {
+    if (key === "s") {
+      saveDrawingJson();
+      event.preventDefault();
+      return;
+    }
+    if (key === "o") {
+      loadDrawingJson();
+      event.preventDefault();
+      return;
+    }
+  }
+  if (showSaveDialog.value && key === "escape") {
+    showSaveDialog.value = false;
+    event.preventDefault();
+    return;
+  }
   if (event.target) {
     const tag = event.target.tagName;
     if (tag === "TEXTAREA") return;
@@ -3858,6 +4305,7 @@ function handleKeyDown(event) {
   if (key === "escape") {
     toolState = { step: 0 };
     hoverSnap = null;
+    bumpToolHelpTick();
     scheduleRender();
     return;
   }

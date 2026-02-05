@@ -190,6 +190,18 @@ canvas {
   margin: 2px 0;
 }
 
+.menu-help-block {
+  margin: 0;
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #2f426a;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 7px 8px;
+  min-height: 31px;
+}
+
 .menu-toggle {
   display: inline-flex;
   align-items: center;
@@ -371,6 +383,24 @@ canvas {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 6px;
+}
+
+.tool-palette-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tool-help-text {
+  margin: 0;
+  border: 1px solid #d7e0f4;
+  border-radius: 10px;
+  background: #eef3ff;
+  color: #2f426a;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  min-height: 34px;
 }
 
 .tool-btn {
@@ -689,6 +719,67 @@ canvas {
 .info-btn:hover {
   background: #245cd1;
   border-color: #245cd1;
+}
+
+.save-overlay {
+  z-index: 540;
+}
+
+.save-popup {
+  width: min(420px, calc(100vw - 24px));
+}
+
+.save-text {
+  margin-bottom: 10px;
+}
+
+.save-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.save-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #213259;
+}
+
+.save-input {
+  border: 1px solid #d7e0f4;
+  border-radius: 8px;
+  background: #eef3ff;
+  color: #213259;
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.save-input:focus {
+  border-color: #2b6bf3;
+  box-shadow: 0 0 0 2px rgba(43, 107, 243, 0.15);
+}
+
+.save-actions {
+  gap: 8px;
+}
+
+.save-btn {
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.save-btn-secondary {
+  border: 1px solid #d7e0f4;
+  background: #eef3ff;
+  color: #213259;
+}
+
+.save-btn-secondary:hover {
+  background: #e2e9ff;
 }
 
 .hud-info {
