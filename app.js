@@ -4547,7 +4547,8 @@ function isTouchDragConstructionTool(toolId) {
     toolId === "compass" ||
     toolId === "arc" ||
     toolId === "stamp" ||
-    toolId === "copy"
+    toolId === "copy" ||
+    toolId === "paste"
   );
 }
 
@@ -4623,6 +4624,20 @@ function beginTouchDrawGesture(pointerId) {
       start: target,
     };
     toolState = { step: 0, p0: target };
+  } else if (toolId === "paste") {
+    if (!measureDistance.value) {
+      setStatus("Copy a measure first (tool 8).");
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    touchDrawGesture = {
+      id: pointerId,
+      kind: "paste",
+      toolId,
+      center: target,
+    };
+    toolState = { step: 0, center: target };
   } else if (toolId === "stamp") {
     touchDrawGesture = {
       id: pointerId,
@@ -4757,11 +4772,77 @@ function finalizeTouchDrawGesture(pointerId, worldPoint, canceled = false) {
   }
 
   if (gesture.kind === "copy") {
+    const tapThreshold = TOUCH_TAP_SLOP_PX / view.scale;
+    const dragDistance = dist(gesture.start, target);
+    const hit = dragDistance <= tapThreshold && !isNearSpecialPoint(worldPoint) ? hitTestCircleOrSegment(worldPoint) : null;
+
+    if (hit?.type === "circle") {
+      commitHistory();
+      measureDistance.value = dist(hit.c, hit.rp);
+      toolState = { step: 0 };
+      setStatus("Circle radius copied.");
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+
+    if (hit?.type === "segment") {
+      commitHistory();
+      measureDistance.value = dist(hit.p0, hit.p1);
+      toolState = { step: 0 };
+      setStatus("Segment length copied.");
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+
+    if (dragDistance < 1) {
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+
     commitHistory();
-    const d = dist(gesture.start, target);
-    measureDistance.value = d;
+    measureDistance.value = dragDistance;
     toolState = { step: 0 };
     setStatus("Measure copied.");
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
+
+  if (gesture.kind === "paste") {
+    if (!measureDistance.value) {
+      setStatus("Copy a measure first (tool 8).");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    if (dist(gesture.center, target) < 1) {
+      setStatus("Paste direction needs two distinct points.");
+      toolState = { step: 0 };
+      bumpToolHelpTick();
+      scheduleRender();
+      return true;
+    }
+    const angle = Math.atan2(target.y - gesture.center.y, target.x - gesture.center.x);
+    const startAngle = normalizeAngle(angle - ARC_SPAN / 2);
+    const endAngle = normalizeAngle(angle + ARC_SPAN / 2);
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "measure",
+      c: gesture.center,
+      rp: {
+        x: gesture.center.x + Math.cos(angle) * measureDistance.value,
+        y: gesture.center.y + Math.sin(angle) * measureDistance.value,
+      },
+      startAngle,
+      endAngle,
+    });
+    toolState = { step: 0 };
     bumpToolHelpTick();
     scheduleRender();
     return true;
@@ -5005,11 +5086,15 @@ function handlePrimaryPointerAction() {
     if (!toolState.p0) {
       toolState.p0 = target;
     } else {
-      commitHistory();
       const d = dist(toolState.p0, target);
-      measureDistance.value = d;
-      toolState = { step: 0 };
-      setStatus("Measure copied.");
+      if (d < 1) {
+        setStatus("Copy needs two distinct points.");
+      } else {
+        commitHistory();
+        measureDistance.value = d;
+        toolState = { step: 0 };
+        setStatus("Measure copied.");
+      }
     }
   }
 
