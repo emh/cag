@@ -184,7 +184,7 @@ function bumpToolHelpTick() {
 }
 
 const DEFAULT_MENU_HELP = {
-  file: "Manage drawings: save or load JSON, export PNG, share, or open info.",
+  file: "Manage drawings: save or load JSON, export PNG/SVG, share, or open info.",
   edit: "Undo, redo, or clear the drawing.",
   tool: "Choose the active drawing tool.",
   settings: "Adjust fill colors, stamp setup, ink thickness, and fill alpha.",
@@ -953,6 +953,16 @@ function Toolbar() {
                     onClick: () => runMenuAction(() => downloadPng()),
                   },
                   h("span", null, "Download PNG")
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "menu-action",
+                    ...withMenuHelp("file", "Export the drawing as an SVG image."),
+                    onClick: () => runMenuAction(() => downloadSvg()),
+                  },
+                  h("span", null, "Download SVG")
                 ),
                 h(
                   "button",
@@ -2703,6 +2713,691 @@ function computeExportBounds(includeGuides) {
   return bounds;
 }
 
+function formatSvgNumber(value) {
+  if (!Number.isFinite(value)) return "0";
+  const rounded = Math.round(value * 1000) / 1000;
+  const normalized = Object.is(rounded, -0) ? 0 : rounded;
+  return normalized.toFixed(3).replace(/\.?0+$/, "");
+}
+
+function toSvgPoint(point, offsetX, offsetY) {
+  return {
+    x: point.x + offsetX,
+    y: point.y + offsetY,
+  };
+}
+
+function endpointNodeKey(endpoint, prim) {
+  if (!endpoint) return null;
+  if (endpoint.type === "intersection") return `i:${endpoint.id}`;
+  if (endpoint.type === "endpoint") return `e:${prim.id}:${endpoint.which}`;
+  if (endpoint.type === "clip") return `c:${prim.id}:${endpoint.which}`;
+  return null;
+}
+
+function arcSweepMagnitude(startAngle, endAngle, ccw = false) {
+  return ccw ? normalizeAngle(startAngle - endAngle) : normalizeAngle(endAngle - startAngle);
+}
+
+function arcPoint(center, radius, angle) {
+  return {
+    x: center.x + Math.cos(angle) * radius,
+    y: center.y + Math.sin(angle) * radius,
+  };
+}
+
+function arcTangentVector(angle, ccw = false) {
+  const dir = ccw ? -1 : 1;
+  return {
+    x: -Math.sin(angle) * dir,
+    y: Math.cos(angle) * dir,
+  };
+}
+
+function normalizeVector(vector) {
+  const magnitude = Math.hypot(vector.x, vector.y);
+  if (!Number.isFinite(magnitude) || magnitude <= EPS) return null;
+  return { x: vector.x / magnitude, y: vector.y / magnitude };
+}
+
+function buildBoundaryCycleFromEdges(edges, id) {
+  if (!edges || !edges.length) return null;
+  const start = edges[0].start;
+  const end = edges[edges.length - 1].end;
+  if (dist(start, end) > 1e-3) return null;
+
+  const ops = [];
+  const samples = [start];
+  const segIds = new Set();
+
+  edges.forEach((edge) => {
+    segIds.add(edge.segId);
+    if (edge.kind === "line") {
+      ops.push({
+        kind: "line",
+        to: edge.end,
+      });
+      samples.push(edge.end);
+      return;
+    }
+
+    if (edge.kind === "arc") {
+      const sweep = arcSweepMagnitude(edge.startAngle, edge.endAngle, edge.ccw);
+      if (sweep <= EPS) return;
+      const largeArcFlag = sweep > Math.PI + EPS ? 1 : 0;
+      const sweepFlag = edge.ccw ? 0 : 1;
+      ops.push({
+        kind: "arc",
+        to: edge.end,
+        center: edge.center,
+        radius: edge.radius,
+        startAngle: edge.startAngle,
+        endAngle: edge.endAngle,
+        ccw: edge.ccw,
+        largeArcFlag,
+        sweepFlag,
+      });
+      const steps = Math.max(4, Math.ceil((sweep / (Math.PI * 2)) * 48));
+      for (let i = 1; i <= steps; i += 1) {
+        const t = i / steps;
+        const angle = edge.ccw ? edge.startAngle - sweep * t : edge.startAngle + sweep * t;
+        samples.push(arcPoint(edge.center, edge.radius, angle));
+      }
+    }
+  });
+
+  if (!ops.length) return null;
+
+  let area = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const a = samples[i];
+    const b = samples[(i + 1) % samples.length];
+    area += a.x * b.y - a.y * b.x;
+  }
+  area *= 0.5;
+  if (Math.abs(area) <= 1e-3) return null;
+
+  const first = edges[0];
+  let midPoint;
+  let tangent;
+  let edgeLength = 0;
+  if (first.kind === "line") {
+    midPoint = {
+      x: (first.start.x + first.end.x) * 0.5,
+      y: (first.start.y + first.end.y) * 0.5,
+    };
+    tangent = normalizeVector({
+      x: first.end.x - first.start.x,
+      y: first.end.y - first.start.y,
+    });
+    edgeLength = dist(first.start, first.end);
+  } else {
+    const sweep = arcSweepMagnitude(first.startAngle, first.endAngle, first.ccw);
+    const midAngle = first.ccw ? first.startAngle - sweep * 0.5 : first.startAngle + sweep * 0.5;
+    midPoint = arcPoint(first.center, first.radius, midAngle);
+    tangent = normalizeVector(arcTangentVector(midAngle, first.ccw));
+    edgeLength = Math.max(first.radius, first.radius * sweep);
+  }
+
+  let facePoint = start;
+  if (midPoint && tangent) {
+    const rightNormal = {
+      x: -tangent.y,
+      y: tangent.x,
+    };
+    const offset = Math.max(0.35, Math.min(3, edgeLength * 0.12));
+    facePoint = {
+      x: midPoint.x + rightNormal.x * offset,
+      y: midPoint.y + rightNormal.y * offset,
+    };
+  }
+
+  let path2d = null;
+  if (typeof Path2D === "function") {
+    path2d = new Path2D();
+    path2d.moveTo(start.x, start.y);
+    ops.forEach((op) => {
+      if (op.kind === "line") {
+        path2d.lineTo(op.to.x, op.to.y);
+      } else if (op.kind === "arc") {
+        path2d.arc(op.center.x, op.center.y, op.radius, op.startAngle, op.endAngle, op.ccw);
+      }
+    });
+    path2d.closePath();
+  }
+
+  return {
+    id,
+    start,
+    ops,
+    segIds,
+    facePoint,
+    area,
+    absArea: Math.abs(area),
+    path2d,
+  };
+}
+
+function traceDirectedBoundary(startId, directedById, outgoingByNode) {
+  const edges = [];
+  const seen = new Set();
+  let currentId = startId;
+  const maxSteps = directedById.size + 2;
+
+  for (let i = 0; i < maxSteps; i += 1) {
+    const current = directedById.get(currentId);
+    if (!current) {
+      return { closed: false, edges };
+    }
+    edges.push(current);
+    seen.add(currentId);
+    const outgoing = outgoingByNode.get(current.toNode);
+    if (!outgoing || !outgoing.length) {
+      return { closed: false, edges };
+    }
+    const twinIndex = outgoing.indexOf(current.twinId);
+    if (twinIndex === -1) {
+      return { closed: false, edges };
+    }
+    const nextId = outgoing[(twinIndex - 1 + outgoing.length) % outgoing.length];
+    if (nextId === startId) {
+      return { closed: true, edges };
+    }
+    if (seen.has(nextId)) {
+      return { closed: false, edges };
+    }
+    currentId = nextId;
+  }
+
+  return { closed: false, edges };
+}
+
+function buildInkBoundaryCycles(bounds, segments = state.ink) {
+  const primById = new Map(state.primitives.map((prim) => [prim.id, prim]));
+  const baseEdges = [];
+  const cycles = [];
+  let edgeCounter = 1;
+  let cycleCounter = 1;
+
+  function addBaseEdge(edge) {
+    baseEdges.push({
+      id: `edge-${edgeCounter++}`,
+      ...edge,
+    });
+  }
+
+  function addFullCircleCycles(segId, center, radius) {
+    const start = arcPoint(center, radius, 0);
+    const opposite = arcPoint(center, radius, Math.PI);
+    const clockwise = buildBoundaryCycleFromEdges(
+      [
+        {
+          segId,
+          kind: "arc",
+          start,
+          end: opposite,
+          center,
+          radius,
+          startAngle: 0,
+          endAngle: Math.PI,
+          ccw: false,
+        },
+        {
+          segId,
+          kind: "arc",
+          start: opposite,
+          end: start,
+          center,
+          radius,
+          startAngle: Math.PI,
+          endAngle: Math.PI * 2,
+          ccw: false,
+        },
+      ],
+      `cycle-${cycleCounter++}`
+    );
+    if (clockwise) cycles.push(clockwise);
+
+    const counterClockwise = buildBoundaryCycleFromEdges(
+      [
+        {
+          segId,
+          kind: "arc",
+          start,
+          end: opposite,
+          center,
+          radius,
+          startAngle: 0,
+          endAngle: Math.PI,
+          ccw: true,
+        },
+        {
+          segId,
+          kind: "arc",
+          start: opposite,
+          end: start,
+          center,
+          radius,
+          startAngle: Math.PI,
+          endAngle: 0,
+          ccw: true,
+        },
+      ],
+      `cycle-${cycleCounter++}`
+    );
+    if (counterClockwise) cycles.push(counterClockwise);
+  }
+
+  segments.forEach((seg) => {
+    const prim = primById.get(seg.primId);
+    if (!prim) return;
+
+    if (seg.kind === "line") {
+      const start = resolveLineEndpoint(seg.a, prim, bounds);
+      const end = resolveLineEndpoint(seg.b, prim, bounds);
+      const startNode = endpointNodeKey(seg.a, prim);
+      const endNode = endpointNodeKey(seg.b, prim);
+      if (!start || !end || !startNode || !endNode) return;
+      if (startNode === endNode || dist(start, end) <= EPS) return;
+      addBaseEdge({
+        segId: seg.id,
+        kind: "line",
+        startNode,
+        endNode,
+        start,
+        end,
+      });
+      return;
+    }
+
+    if (seg.kind !== "circle") return;
+    const radius = dist(prim.c, prim.rp);
+    if (!Number.isFinite(radius) || radius <= EPS) return;
+    if (seg.full) {
+      if (prim.type === "circle") {
+        addFullCircleCycles(seg.id, prim.c, radius);
+      }
+      return;
+    }
+
+    const angles = resolveCircularSegmentAngles(seg, prim);
+    if (!angles) return;
+    const start = arcPoint(prim.c, radius, angles.aAngle);
+    const end = arcPoint(prim.c, radius, angles.bAngle);
+    const startNode = endpointNodeKey(seg.a, prim);
+    const endNode = endpointNodeKey(seg.b, prim);
+    if (!startNode || !endNode) return;
+    if (startNode === endNode || dist(start, end) <= EPS) return;
+    addBaseEdge({
+      segId: seg.id,
+      kind: "arc",
+      startNode,
+      endNode,
+      start,
+      end,
+      center: prim.c,
+      radius,
+      startAngle: angles.aAngle,
+      endAngle: angles.bAngle,
+      ccw: !!seg.ccw,
+    });
+  });
+
+  const directedById = new Map();
+  const outgoingByNode = new Map();
+
+  function pushOutgoing(node, id) {
+    if (!outgoingByNode.has(node)) outgoingByNode.set(node, []);
+    outgoingByNode.get(node).push(id);
+  }
+
+  function addDirectedEdge(id, twinId, edge) {
+    let outAngle = 0;
+    if (edge.kind === "line") {
+      outAngle = normalizeAngle(Math.atan2(edge.end.y - edge.start.y, edge.end.x - edge.start.x));
+    } else {
+      const tangent = arcTangentVector(edge.startAngle, edge.ccw);
+      outAngle = normalizeAngle(Math.atan2(tangent.y, tangent.x));
+    }
+    directedById.set(id, {
+      id,
+      twinId,
+      segId: edge.segId,
+      kind: edge.kind,
+      start: edge.start,
+      end: edge.end,
+      fromNode: edge.startNode,
+      toNode: edge.endNode,
+      center: edge.center,
+      radius: edge.radius,
+      startAngle: edge.startAngle,
+      endAngle: edge.endAngle,
+      ccw: edge.ccw,
+      outAngle,
+    });
+    pushOutgoing(edge.startNode, id);
+  }
+
+  baseEdges.forEach((edge) => {
+    const forwardId = `${edge.id}:f`;
+    const reverseId = `${edge.id}:r`;
+    addDirectedEdge(forwardId, reverseId, edge);
+    if (edge.kind === "line") {
+      addDirectedEdge(reverseId, forwardId, {
+        ...edge,
+        startNode: edge.endNode,
+        endNode: edge.startNode,
+        start: edge.end,
+        end: edge.start,
+      });
+      return;
+    }
+
+    addDirectedEdge(reverseId, forwardId, {
+      ...edge,
+      startNode: edge.endNode,
+      endNode: edge.startNode,
+      start: edge.end,
+      end: edge.start,
+      startAngle: edge.endAngle,
+      endAngle: edge.startAngle,
+      ccw: !edge.ccw,
+    });
+  });
+
+  for (const [node, list] of outgoingByNode.entries()) {
+    list.sort((aId, bId) => {
+      const a = directedById.get(aId);
+      const b = directedById.get(bId);
+      if (!a || !b) return 0;
+      const delta = a.outAngle - b.outAngle;
+      if (Math.abs(delta) > 1e-9) return delta;
+      return aId.localeCompare(bId);
+    });
+    outgoingByNode.set(node, list);
+  }
+
+  const consumed = new Set();
+  for (const directedId of directedById.keys()) {
+    if (consumed.has(directedId)) continue;
+    const trace = traceDirectedBoundary(directedId, directedById, outgoingByNode);
+    trace.edges.forEach((edge) => consumed.add(edge.id));
+    if (!trace.closed || trace.edges.length < 2) continue;
+    const cycle = buildBoundaryCycleFromEdges(trace.edges, `cycle-${cycleCounter++}`);
+    if (cycle) cycles.push(cycle);
+  }
+
+  return cycles;
+}
+
+let svgPathTestCtx = null;
+
+function getSvgPathTestContext() {
+  if (svgPathTestCtx) return svgPathTestCtx;
+  const off = document.createElement("canvas");
+  off.width = 1;
+  off.height = 1;
+  svgPathTestCtx = off.getContext("2d");
+  return svgPathTestCtx;
+}
+
+function pointInCyclePath(cycle, point, testCtx = getSvgPathTestContext()) {
+  if (!cycle?.path2d || !testCtx || !point) return false;
+  return testCtx.isPointInPath(cycle.path2d, point.x, point.y, "evenodd");
+}
+
+function pointInFillRegionForExport(fill, point) {
+  if (!fill || !point) return false;
+  if (pointInFillMask(fill, point)) return true;
+  const pixelSize = Math.max(0.5, fill.pixelSize || 1);
+  const probes = [
+    { x: point.x + pixelSize * 0.5, y: point.y },
+    { x: point.x - pixelSize * 0.5, y: point.y },
+    { x: point.x, y: point.y + pixelSize * 0.5 },
+    { x: point.x, y: point.y - pixelSize * 0.5 },
+    { x: point.x + pixelSize * 0.5, y: point.y + pixelSize * 0.5 },
+    { x: point.x - pixelSize * 0.5, y: point.y + pixelSize * 0.5 },
+    { x: point.x + pixelSize * 0.5, y: point.y - pixelSize * 0.5 },
+    { x: point.x - pixelSize * 0.5, y: point.y - pixelSize * 0.5 },
+  ];
+  return probes.some((probe) => pointInFillMask(fill, probe));
+}
+
+function svgPathForCycle(cycle, offsetX, offsetY) {
+  if (!cycle) return "";
+  const start = toSvgPoint(cycle.start, offsetX, offsetY);
+  let d = `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)}`;
+  cycle.ops.forEach((op) => {
+    if (op.kind === "line") {
+      const to = toSvgPoint(op.to, offsetX, offsetY);
+      d += ` L ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}`;
+      return;
+    }
+    if (op.kind === "arc") {
+      const to = toSvgPoint(op.to, offsetX, offsetY);
+      d += ` A ${formatSvgNumber(op.radius)} ${formatSvgNumber(op.radius)} 0 ${op.largeArcFlag} ${op.sweepFlag} ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}`;
+    }
+  });
+  return `${d} Z`;
+}
+
+function buildFillPathForExport(fill, cycles, offsetX, offsetY, testCtx = getSvgPathTestContext()) {
+  if (!fill || !cycles.length) return "";
+  const segSet = fill.boundSegIds?.length ? new Set(fill.boundSegIds) : null;
+  const candidates = cycles.filter((cycle) => {
+    if (!cycle.segIds?.size) return false;
+    if (!segSet) return true;
+    for (const segId of cycle.segIds) {
+      if (!segSet.has(segId)) return false;
+    }
+    return true;
+  });
+  if (!candidates.length) return "";
+
+  let selected = candidates.filter((cycle) => pointInFillRegionForExport(fill, cycle.facePoint));
+  if (!selected.length && fill.seed) {
+    const containing = candidates.filter((cycle) => pointInCyclePath(cycle, fill.seed, testCtx));
+    if (containing.length) {
+      const smallest = containing.reduce((best, cycle) => {
+        if (!best || cycle.absArea < best.absArea) return cycle;
+        return best;
+      }, null);
+      selected = smallest ? [smallest] : [];
+    }
+  }
+  if (!selected.length) return "";
+
+  selected.sort((a, b) => b.absArea - a.absArea);
+  return selected.map((cycle) => svgPathForCycle(cycle, offsetX, offsetY)).filter(Boolean).join(" ");
+}
+
+function buildSvgArcPath(center, radius, startAngle, endAngle, ccw, offsetX, offsetY) {
+  if (!Number.isFinite(radius) || radius <= EPS) return "";
+  const sweep = arcSweepMagnitude(startAngle, endAngle, ccw);
+  if (sweep <= EPS) return "";
+  const start = toSvgPoint(arcPoint(center, radius, startAngle), offsetX, offsetY);
+  const end = toSvgPoint(arcPoint(center, radius, endAngle), offsetX, offsetY);
+  const largeArcFlag = sweep > Math.PI + EPS ? 1 : 0;
+  const sweepFlag = ccw ? 0 : 1;
+  return `M ${formatSvgNumber(start.x)} ${formatSvgNumber(start.y)} A ${formatSvgNumber(radius)} ${formatSvgNumber(radius)} 0 ${largeArcFlag} ${sweepFlag} ${formatSvgNumber(end.x)} ${formatSvgNumber(end.y)}`;
+}
+
+function collectGuideExportPoints() {
+  const points = [];
+  const seen = new Set();
+  const addPoint = (point) => {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    const key = `${Math.round(point.x * 1000)}:${Math.round(point.y * 1000)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    points.push(point);
+  };
+
+  state.primitives.forEach((prim) => {
+    if (prim.type === "line" || prim.type === "segment") {
+      addPoint(prim.p0);
+      addPoint(prim.p1);
+      return;
+    }
+    if (prim.type === "circle") {
+      addPoint(prim.c);
+      return;
+    }
+    if (prim.type === "arc" || prim.type === "measure") {
+      const endpoints = arcEndpoints(prim);
+      addPoint(prim.c);
+      addPoint(endpoints.start);
+      addPoint(endpoints.end);
+    }
+  });
+
+  return points;
+}
+
+function buildExportSvgString() {
+  const includeGuides = true;
+  const bounds = computeExportBounds(true);
+  if (!bounds) {
+    setStatus("Nothing to export.");
+    return null;
+  }
+
+  const margin = 20;
+  const widthWorld = Math.max(1, bounds.maxX - bounds.minX);
+  const heightWorld = Math.max(1, bounds.maxY - bounds.minY);
+  const svgWidth = widthWorld + margin * 2;
+  const svgHeight = heightWorld + margin * 2;
+  const offsetX = margin - bounds.minX;
+  const offsetY = margin - bounds.minY;
+
+  const parts = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${formatSvgNumber(svgWidth)}" height="${formatSvgNumber(svgHeight)}" viewBox="0 0 ${formatSvgNumber(svgWidth)} ${formatSvgNumber(svgHeight)}">`,
+    `  <rect x="0" y="0" width="${formatSvgNumber(svgWidth)}" height="${formatSvgNumber(svgHeight)}" fill="#ffffff" />`,
+  ];
+
+  const boundaryCycles = buildInkBoundaryCycles(bounds, state.ink);
+  const pathTestCtx = getSvgPathTestContext();
+  state.fills.forEach((fill) => {
+    const pathData = buildFillPathForExport(fill, boundaryCycles, offsetX, offsetY, pathTestCtx);
+    if (!pathData) return;
+    const alpha = Math.max(0, Math.min(1, fill.alpha ?? 0.65));
+    const color = typeof fill.color === "string" ? fill.color : "#000000";
+    parts.push(
+      `  <path d="${pathData}" fill="${color}" fill-opacity="${formatSvgNumber(alpha)}" fill-rule="evenodd" />`
+    );
+  });
+
+  if (includeGuides) {
+    state.primitives.forEach((prim) => {
+      if (prim.type === "line") {
+        const clip = clipLineToBounds(prim, bounds);
+        if (!clip) return;
+        const a = toSvgPoint(clip.min, offsetX, offsetY);
+        const b = toSvgPoint(clip.max, offsetX, offsetY);
+        parts.push(
+          `  <path d="M ${formatSvgNumber(a.x)} ${formatSvgNumber(a.y)} L ${formatSvgNumber(b.x)} ${formatSvgNumber(b.y)}" fill="none" stroke="#8fbef8" stroke-width="1.2" />`
+        );
+      }
+      if (prim.type === "segment") {
+        const a = toSvgPoint(prim.p0, offsetX, offsetY);
+        const b = toSvgPoint(prim.p1, offsetX, offsetY);
+        parts.push(
+          `  <path d="M ${formatSvgNumber(a.x)} ${formatSvgNumber(a.y)} L ${formatSvgNumber(b.x)} ${formatSvgNumber(b.y)}" fill="none" stroke="#8fbef8" stroke-width="1.2" />`
+        );
+      }
+      if (prim.type === "circle") {
+        const center = toSvgPoint(prim.c, offsetX, offsetY);
+        const radius = dist(prim.c, prim.rp);
+        parts.push(
+          `  <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" fill="none" stroke="#8fbef8" stroke-width="1.2" />`
+        );
+      }
+      if (prim.type === "arc") {
+        const radius = dist(prim.c, prim.rp);
+        const path = buildSvgArcPath(prim.c, radius, prim.startAngle, prim.endAngle, false, offsetX, offsetY);
+        if (!path) return;
+        parts.push(`  <path d="${path}" fill="none" stroke="#8fbef8" stroke-width="1.2" />`);
+      }
+      if (prim.type === "measure") {
+        const radius = dist(prim.c, prim.rp);
+        const path = buildSvgArcPath(prim.c, radius, prim.startAngle, prim.endAngle, false, offsetX, offsetY);
+        if (!path) return;
+        parts.push(
+          `  <path d="${path}" fill="none" stroke="#8fbef8" stroke-width="1.2" stroke-dasharray="5 6" />`
+        );
+      }
+    });
+
+    const guidePoints = collectGuideExportPoints();
+    if (guidePoints.length) {
+      parts.push('  <g fill="#8fbef8">');
+      guidePoints.forEach((point) => {
+        const p = toSvgPoint(point, offsetX, offsetY);
+        parts.push(
+          `    <circle cx="${formatSvgNumber(p.x)}" cy="${formatSvgNumber(p.y)}" r="${formatSvgNumber(2.5)}" />`
+        );
+      });
+      parts.push("  </g>");
+    }
+
+    if (intersections.list.length) {
+      parts.push('  <g fill="#2b6bf3">');
+      intersections.list.forEach((inter) => {
+        const point = toSvgPoint(inter.point, offsetX, offsetY);
+        parts.push(
+          `    <circle cx="${formatSvgNumber(point.x)}" cy="${formatSvgNumber(point.y)}" r="${formatSvgNumber(3)}" />`
+        );
+      });
+      parts.push("  </g>");
+    }
+  }
+
+  parts.push('  <g fill="none" stroke="#0b0b0f" stroke-linecap="butt" stroke-linejoin="miter">');
+  state.ink.forEach((seg) => {
+    const prim = state.primitives.find((p) => p.id === seg.primId);
+    if (!prim) return;
+    const strokeWidth = formatSvgNumber(seg.thickness ?? 2);
+    if (seg.kind === "line") {
+      const a = resolveLineEndpoint(seg.a, prim, bounds);
+      const b = resolveLineEndpoint(seg.b, prim, bounds);
+      if (!a || !b) return;
+      const pa = toSvgPoint(a, offsetX, offsetY);
+      const pb = toSvgPoint(b, offsetX, offsetY);
+      parts.push(
+        `    <path d="M ${formatSvgNumber(pa.x)} ${formatSvgNumber(pa.y)} L ${formatSvgNumber(pb.x)} ${formatSvgNumber(pb.y)}" stroke-width="${strokeWidth}" />`
+      );
+      return;
+    }
+
+    if (seg.kind !== "circle") return;
+    const radius = dist(prim.c, prim.rp);
+    if (seg.full) {
+      if (prim.type === "circle") {
+        const center = toSvgPoint(prim.c, offsetX, offsetY);
+        parts.push(
+          `    <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" stroke-width="${strokeWidth}" />`
+        );
+      } else if (isArcPrimitive(prim)) {
+        const path = buildSvgArcPath(prim.c, radius, prim.startAngle, prim.endAngle, false, offsetX, offsetY);
+        if (!path) return;
+        parts.push(`    <path d="${path}" stroke-width="${strokeWidth}" />`);
+      }
+      return;
+    }
+
+    const angles = resolveCircularSegmentAngles(seg, prim);
+    if (!angles) return;
+    const path = buildSvgArcPath(prim.c, radius, angles.aAngle, angles.bAngle, seg.ccw, offsetX, offsetY);
+    if (!path) return;
+    parts.push(`    <path d="${path}" stroke-width="${strokeWidth}" />`);
+  });
+  parts.push("  </g>");
+
+  parts.push("</svg>");
+  return parts.join("\n");
+}
+
 function buildExportPngCanvas() {
   const includeGuides = showGuides.value;
   const bounds = computeExportBounds(includeGuides);
@@ -2868,6 +3563,19 @@ function downloadPng() {
   link.href = exportCanvas.toDataURL("image/png");
   link.download = "cag-drawing.png";
   link.click();
+}
+
+function downloadSvg() {
+  const svg = buildExportSvgString();
+  if (!svg) return;
+
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "cag-drawing.svg";
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function dataUrlToFile(dataUrl, fileName) {
