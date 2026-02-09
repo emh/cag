@@ -2397,27 +2397,37 @@ function computeNextId(items) {
   return maxId + 1;
 }
 
+function resolveFillSegments(fill, inkById = new Map(state.ink.map((seg) => [seg.id, seg]))) {
+  if (fill.boundSegIds?.length) {
+    return fill.boundSegIds.map((id) => inkById.get(id)).filter(Boolean);
+  }
+  return state.ink;
+}
+
+function rerasterizeFillFromGeometry(fill, segments, fallbackBounds) {
+  if (!fill?.seed || !segments?.length) return null;
+  const bounds = computeBoundsForSegments(segments, fallbackBounds);
+  if (!bounds) return null;
+  const seed = findSeedForFill(fill, bounds) || fill.seed;
+  const raster = rasterizeFill(seed, bounds, segments);
+  if (!raster.ok) return null;
+  return {
+    ...fill,
+    ...raster.data,
+    bounds: normalizeBounds(bounds),
+    seed: { x: seed.x, y: seed.y },
+  };
+}
+
 function rebuildFillMasksFromShare() {
   if (!state.fills.length) return;
   const primitiveBounds = computePrimitiveBounds() || getWorldBounds();
   const inkById = new Map(state.ink.map((seg) => [seg.id, seg]));
   const rebuilt = [];
   state.fills.forEach((fill) => {
-    if (!fill.seed) return;
-    const segments = fill.boundSegIds?.length
-      ? fill.boundSegIds.map((id) => inkById.get(id)).filter(Boolean)
-      : state.ink;
-    if (!segments.length) return;
-    const bounds = computeBoundsForSegments(segments, primitiveBounds);
-    if (!bounds) return;
-    const raster = rasterizeFill(fill.seed, bounds, segments);
-    if (!raster.ok) return;
-    const next = {
-      ...fill,
-      ...raster.data,
-      bounds: normalizeBounds(bounds),
-      seed: { x: fill.seed.x, y: fill.seed.y },
-    };
+    const segments = resolveFillSegments(fill, inkById);
+    const next = rerasterizeFillFromGeometry(fill, segments, primitiveBounds);
+    if (!next) return;
     next.canvas = buildFillCanvas(next);
     rebuilt.push(next);
   });
@@ -3420,14 +3430,23 @@ function buildExportPngCanvas() {
   const offsetY = margin - bounds.minY;
   ectx.setTransform(scale, 0, 0, scale, offsetX * scale, offsetY * scale);
 
+  const primitiveBounds = computePrimitiveBounds() || bounds;
+  const inkById = new Map(state.ink.map((seg) => [seg.id, seg]));
+
   ectx.save();
   ectx.imageSmoothingEnabled = false;
   state.fills.forEach((fill) => {
-    if (!fill.canvas) fill.canvas = buildFillCanvas(fill);
-    const pixelSize = fill.pixelSize || 1;
-    const w = fill.width * pixelSize;
-    const h = fill.height * pixelSize;
-    ectx.drawImage(fill.canvas, fill.origin.x, fill.origin.y, w, h);
+    const segments = resolveFillSegments(fill, inkById);
+    const rerasterized = rerasterizeFillFromGeometry(fill, segments, primitiveBounds);
+    const drawable = rerasterized || fill;
+    if (!drawable?.mask || !drawable.origin || !Number.isFinite(drawable.width) || !Number.isFinite(drawable.height)) {
+      return;
+    }
+    const fillCanvas = buildFillCanvas(drawable);
+    const pixelSize = drawable.pixelSize || 1;
+    const w = drawable.width * pixelSize;
+    const h = drawable.height * pixelSize;
+    ectx.drawImage(fillCanvas, drawable.origin.x, drawable.origin.y, w, h);
   });
   ectx.restore();
 
@@ -4699,24 +4718,12 @@ function addFillRegion(fill) {
 
 function rerasterizeFills() {
   if (!state.fills.length) return;
-  const currentBounds = getWorldBounds();
+  const primitiveBounds = computePrimitiveBounds() || getWorldBounds();
   const inkById = new Map(state.ink.map((seg) => [seg.id, seg]));
   const updated = state.fills.map((fill) => {
-    if (!fill.seed || !fill.bounds) return fill;
-    const seed = findSeedForFill(fill, currentBounds);
-    if (!seed) return fill;
-    const segments = fill.boundSegIds?.length
-      ? fill.boundSegIds.map((id) => inkById.get(id)).filter(Boolean)
-      : state.ink;
-    if (!segments.length) return fill;
-    const raster = rasterizeFill(seed, currentBounds, segments);
-    if (!raster.ok) return fill;
-    const next = {
-      ...fill,
-      ...raster.data,
-      bounds: normalizeBounds(currentBounds),
-      seed: { x: seed.x, y: seed.y },
-    };
+    const segments = resolveFillSegments(fill, inkById);
+    const next = rerasterizeFillFromGeometry(fill, segments, primitiveBounds);
+    if (!next) return fill;
     next.canvas = buildFillCanvas(next);
     return next;
   });
@@ -5201,8 +5208,9 @@ function performFill(worldPoint) {
     return false;
   }
 
-  const bounds = getWorldBounds();
-  const raster = rasterizeFill(worldPoint, bounds, state.ink);
+  const primitiveBounds = computePrimitiveBounds() || getWorldBounds();
+  const fillBounds = computeBoundsForSegments(state.ink, primitiveBounds) || primitiveBounds;
+  const raster = rasterizeFill(worldPoint, fillBounds, state.ink);
   if (!raster.ok) {
     return false;
   }
@@ -5210,7 +5218,7 @@ function performFill(worldPoint) {
   const fill = {
     id: state.nextFillId,
     seed: { x: worldPoint.x, y: worldPoint.y },
-    bounds: normalizeBounds(bounds),
+    bounds: normalizeBounds(fillBounds),
     color: fillColor.value,
     alpha: fillAlpha.value,
     boundSegIds: state.ink.map((seg) => seg.id),
