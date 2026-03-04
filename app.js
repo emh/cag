@@ -44,7 +44,7 @@ const palette = signal([
   "#475569",
   "#000000",
 ]);
-const fillColor = signal(palette.value[0]);
+const fillColor = signal("#000000");
 const fillAlpha = signal(0.65);
 const status = signal("");
 const measureDistance = signal(null);
@@ -203,7 +203,7 @@ const DEFAULT_MENU_HELP = {
   file: "Manage drawings: save or load JSON, export PNG/SVG, share, or open info.",
   edit: "Undo, redo, or clear the drawing.",
   tool: "Choose the active drawing tool.",
-  settings: "Adjust fill colors, stamp setup, ink thickness, and fill alpha.",
+  settings: "Adjust drawing colors, stamp setup, ink thickness, and fill alpha.",
   grid: "Configure grid visibility, snap, size, pattern, and style.",
   view: "Toggle palettes and guides, then control zoom.",
 };
@@ -490,7 +490,7 @@ function Toolbar() {
     { label: "100%", value: 1 },
   ];
 
-  const setFillColor = (color) => {
+  const setDrawingColor = (color) => {
     fillColor.value = color;
     scheduleRender();
   };
@@ -501,7 +501,7 @@ function Toolbar() {
     if (!palette.value.includes(normalized)) {
       palette.value = [...palette.value, normalized];
     }
-    setFillColor(normalized);
+    setDrawingColor(normalized);
   };
 
   const updatePaletteColor = (color, index) => {
@@ -719,7 +719,7 @@ function Toolbar() {
           type: "button",
           class: `swatch ${fillColor.value === color ? "active" : ""}`,
           style: { backgroundColor: color },
-          onClick: () => setFillColor(color),
+          onClick: () => setDrawingColor(color),
         };
         if (editable && editInputId) {
           buttonProps.onDblClick = (event) => {
@@ -1111,14 +1111,14 @@ function Toolbar() {
           { class: "menu-panel menu-panel-settings" },
           h(
             "div",
-            { class: "menu-section-label", ...withMenuHelp("settings", "Choose colors used by the Fill tool.") },
-            "Fill Colors"
+            { class: "menu-section-label", ...withMenuHelp("settings", "Choose the color used by Ink and Fill tools.") },
+            "Color"
           ),
           h(
             "div",
             withMenuHelp(
               "settings",
-              "Pick a fill color. Double-click a swatch to edit, click x to remove, and + to add."
+              "Pick a color. Double-click a swatch to edit, click x to remove, and + to add."
             ),
             renderFillColorGrid()
           ),
@@ -1317,13 +1317,13 @@ function Toolbar() {
           ),
           h(
             "label",
-            { class: "menu-toggle", ...withMenuHelp("view", "Show or hide the floating Fill Colors palette.") },
+            { class: "menu-toggle", ...withMenuHelp("view", "Show or hide the floating Color palette.") },
             h("input", {
               type: "checkbox",
               checked: showFillPalette.value,
               onChange: (event) => toggleFillPalette(event.target.checked),
             }),
-            "Fill Colors Palette"
+            "Color Palette"
           ),
           h(
             "label",
@@ -1428,14 +1428,14 @@ function Toolbar() {
     showFillPalette.value
       ? renderPaletteWindow({
           id: "fill-colors",
-          title: "Fill Colors",
+          title: "Colors",
           className: "fill-palette",
           position: fillPalettePosition.value,
           onClose: () => toggleFillPalette(false),
           children: h(
             "div",
             { class: "controls" },
-            h("label", null, "Fill Colors"),
+            h("label", null, "Color"),
             renderFillColorGrid({ editable: true, editInputId: paletteEditInputId })
           ),
         })
@@ -3219,15 +3219,21 @@ function svgPathForCycle(cycle, offsetX, offsetY) {
 function buildFillPathForExport(fill, cycles, offsetX, offsetY, testCtx = getSvgPathTestContext()) {
   if (!fill || !cycles.length) return "";
   const segSet = fill.boundSegIds?.length ? new Set(fill.boundSegIds) : null;
-  const candidates = cycles.filter((cycle) => {
-    if (!cycle.segIds?.size) return false;
-    if (!segSet) return true;
-    for (const segId of cycle.segIds) {
-      if (!segSet.has(segId)) return false;
+  const allCandidates = cycles.filter((cycle) => cycle.segIds?.size);
+  if (!allCandidates.length) return "";
+
+  let candidates = allCandidates;
+  if (segSet) {
+    candidates = allCandidates.filter((cycle) => {
+      for (const segId of cycle.segIds) {
+        if (!segSet.has(segId)) return false;
+      }
+      return true;
+    });
+    if (!candidates.length) {
+      candidates = allCandidates;
     }
-    return true;
-  });
-  if (!candidates.length) return "";
+  }
 
   let selected = candidates.filter((cycle) => pointInFillRegionForExport(fill, cycle.facePoint));
   if (!selected.length && fill.seed) {
@@ -3238,6 +3244,19 @@ function buildFillPathForExport(fill, cycles, offsetX, offsetY, testCtx = getSvg
         return best;
       }, null);
       selected = smallest ? [smallest] : [];
+    }
+  }
+  if (!selected.length && candidates !== allCandidates) {
+    selected = allCandidates.filter((cycle) => pointInFillRegionForExport(fill, cycle.facePoint));
+    if (!selected.length && fill.seed) {
+      const containing = allCandidates.filter((cycle) => pointInCyclePath(cycle, fill.seed, testCtx));
+      if (containing.length) {
+        const smallest = containing.reduce((best, cycle) => {
+          if (!best || cycle.absArea < best.absArea) return cycle;
+          return best;
+        }, null);
+        selected = smallest ? [smallest] : [];
+      }
     }
   }
   if (!selected.length) return "";
@@ -3317,15 +3336,21 @@ function buildExportSvgString() {
 
   const boundaryCycles = buildInkBoundaryCycles(bounds, state.ink);
   const pathTestCtx = getSvgPathTestContext();
+  const fillPass = [];
   state.fills.forEach((fill) => {
     const pathData = buildFillPathForExport(fill, boundaryCycles, offsetX, offsetY, pathTestCtx);
     if (!pathData) return;
     const alpha = Math.max(0, Math.min(1, fill.alpha ?? 0.65));
     const color = typeof fill.color === "string" ? fill.color : "#000000";
-    parts.push(
-      `  <path d="${pathData}" fill="${color}" fill-opacity="${formatSvgNumber(alpha)}" fill-rule="evenodd" />`
+    fillPass.push(
+      `    <path d="${pathData}" fill="${color}" fill-opacity="${formatSvgNumber(alpha)}" fill-rule="evenodd" stroke="none" />`
     );
   });
+  if (fillPass.length) {
+    parts.push('  <g data-pass="fill">');
+    parts.push(...fillPass);
+    parts.push("  </g>");
+  }
 
   if (includeGuides) {
     state.primitives.forEach((prim) => {
@@ -3392,10 +3417,11 @@ function buildExportSvgString() {
     }
   }
 
-  parts.push('  <g fill="none" stroke="#0b0b0f" stroke-linecap="butt" stroke-linejoin="miter">');
+  parts.push('  <g data-pass="ink-stroke" fill="none" stroke-linecap="butt" stroke-linejoin="miter">');
   state.ink.forEach((seg) => {
     const prim = state.primitives.find((p) => p.id === seg.primId);
     if (!prim) return;
+    const stroke = getInkSegmentColor(seg);
     const strokeWidth = formatSvgNumber(seg.thickness ?? 2);
     if (seg.kind === "line") {
       const a = resolveLineEndpoint(seg.a, prim, bounds);
@@ -3404,7 +3430,7 @@ function buildExportSvgString() {
       const pa = toSvgPoint(a, offsetX, offsetY);
       const pb = toSvgPoint(b, offsetX, offsetY);
       parts.push(
-        `    <path d="M ${formatSvgNumber(pa.x)} ${formatSvgNumber(pa.y)} L ${formatSvgNumber(pb.x)} ${formatSvgNumber(pb.y)}" stroke-width="${strokeWidth}" />`
+        `    <path d="M ${formatSvgNumber(pa.x)} ${formatSvgNumber(pa.y)} L ${formatSvgNumber(pb.x)} ${formatSvgNumber(pb.y)}" stroke="${stroke}" stroke-width="${strokeWidth}" />`
       );
       return;
     }
@@ -3415,12 +3441,12 @@ function buildExportSvgString() {
       if (prim.type === "circle") {
         const center = toSvgPoint(prim.c, offsetX, offsetY);
         parts.push(
-          `    <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" stroke-width="${strokeWidth}" />`
+          `    <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" stroke="${stroke}" stroke-width="${strokeWidth}" />`
         );
       } else if (isArcPrimitive(prim)) {
         const path = buildSvgArcPath(prim.c, radius, prim.startAngle, prim.endAngle, false, offsetX, offsetY);
         if (!path) return;
-        parts.push(`    <path d="${path}" stroke-width="${strokeWidth}" />`);
+        parts.push(`    <path d="${path}" stroke="${stroke}" stroke-width="${strokeWidth}" />`);
       }
       return;
     }
@@ -3429,7 +3455,7 @@ function buildExportSvgString() {
     if (!angles) return;
     const path = buildSvgArcPath(prim.c, radius, angles.aAngle, angles.bAngle, seg.ccw, offsetX, offsetY);
     if (!path) return;
-    parts.push(`    <path d="${path}" stroke-width="${strokeWidth}" />`);
+    parts.push(`    <path d="${path}" stroke="${stroke}" stroke-width="${strokeWidth}" />`);
   });
   parts.push("  </g>");
 
@@ -3567,11 +3593,11 @@ function buildExportPngCanvas() {
   }
 
   ectx.save();
-  ectx.strokeStyle = "#0b0b0f";
   ectx.setLineDash([]);
   state.ink.forEach((seg) => {
     const prim = state.primitives.find((p) => p.id === seg.primId);
     if (!prim) return;
+    ectx.strokeStyle = getInkSegmentColor(seg);
     ectx.lineWidth = seg.thickness ?? 2;
     if (seg.kind === "line") {
       const a = resolveLineEndpoint(seg.a, prim, bounds);
@@ -3687,6 +3713,10 @@ async function shareDrawingPng() {
 
 function setStrokeWidth(px) {
   ctx.lineWidth = px / view.scale;
+}
+
+function getInkSegmentColor(seg) {
+  return typeof seg?.color === "string" && seg.color ? seg.color : "#0b0b0f";
 }
 
 function drawLine(line, strokeStyle, lineWidthPx, dashed = false) {
@@ -3830,7 +3860,7 @@ function drawInkSegment(seg) {
   const prim = state.primitives.find((p) => p.id === seg.primId);
   if (!prim) return;
   ctx.save();
-  ctx.strokeStyle = "#0b0b0f";
+  ctx.strokeStyle = getInkSegmentColor(seg);
   setStrokeWidth(seg.thickness ?? 2);
   ctx.setLineDash([]);
 
@@ -4770,12 +4800,17 @@ function addInkSegment(seg) {
     const updated = {
       ...existing,
       thickness: seg.thickness ?? existing.thickness ?? 2,
+      color: typeof seg.color === "string" ? seg.color : typeof existing.color === "string" ? existing.color : "#0b0b0f",
     };
     state.ink = [...state.ink.slice(0, index), updated, ...state.ink.slice(index + 1)];
     scheduleRender();
     return;
   }
-  state.ink = [...state.ink, seg];
+  const nextSeg = {
+    ...seg,
+    color: typeof seg.color === "string" ? seg.color : "#0b0b0f",
+  };
+  state.ink = [...state.ink, nextSeg];
   scheduleRender();
 }
 
@@ -4930,6 +4965,7 @@ function inkLineSegment(line, worldPoint) {
     a,
     b,
     thickness: inkThickness.value,
+    color: fillColor.value,
   };
   addInkSegment(seg);
 }
@@ -4944,6 +4980,7 @@ function inkCircleSegment(circle, worldPoint) {
       kind: "circle",
       full: true,
       thickness: inkThickness.value,
+      color: fillColor.value,
     };
     addInkSegment(seg);
     return;
@@ -4965,6 +5002,7 @@ function inkCircleSegment(circle, worldPoint) {
     b: { type: "intersection", id: next.id },
     ccw: false,
     thickness: inkThickness.value,
+    color: fillColor.value,
   };
   addInkSegment(seg);
 }
@@ -5002,6 +5040,7 @@ function inkArcSegment(arc, worldPoint) {
     b: after ? { type: "intersection", id: after.id } : { type: "endpoint", which: "end" },
     ccw: false,
     thickness: inkThickness.value,
+    color: fillColor.value,
   };
   addInkSegment(seg);
 }
