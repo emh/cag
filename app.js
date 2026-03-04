@@ -6127,6 +6127,11 @@ function handleKeyDown(event) {
     event.preventDefault();
     return;
   }
+  if (showInfoDialog.value && key === "escape") {
+    showInfoDialog.value = false;
+    event.preventDefault();
+    return;
+  }
   if (event.target) {
     const tag = event.target.tagName;
     if (tag === "TEXTAREA") return;
