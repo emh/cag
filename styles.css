@@ -322,6 +322,38 @@ button {
   color: #ffffff;
 }
 
+.ink-pattern-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.ink-pattern-label {
+  font-size: 12px;
+  color: #4d5a7a;
+  min-width: 54px;
+}
+
+.ink-pattern-row {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ink-pattern-btn {
+  display: grid;
+  place-items: center;
+  padding: 6px 4px;
+}
+
+.ink-pattern-icon {
+  width: 36px;
+  height: 12px;
+  display: block;
+}
+
 .menu-item {
   display: flex;
   align-items: center;

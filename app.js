@@ -50,6 +50,7 @@ const status = signal("");
 const measureDistance = signal(null);
 const zoomValue = signal(1);
 const inkThickness = signal(2);
+const inkPattern = signal("solid");
 const stampShape = signal("square");
 const stampSize = signal(40);
 const showGuides = signal(true);
@@ -457,6 +458,45 @@ function StampIcon({ shape }) {
   return null;
 }
 
+function InkPatternIcon({ pattern }) {
+  const common = {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2.5,
+  };
+  if (pattern === "dashed") {
+    return h(
+      "svg",
+      { class: "ink-pattern-icon", viewBox: "0 0 48 12", "aria-hidden": "true", focusable: "false" },
+      h("line", { ...common, x1: 2, y1: 6, x2: 12, y2: 6, strokeLinecap: "butt" }),
+      h("line", { ...common, x1: 19, y1: 6, x2: 29, y2: 6, strokeLinecap: "butt" }),
+      h("line", { ...common, x1: 36, y1: 6, x2: 46, y2: 6, strokeLinecap: "butt" })
+    );
+  }
+  if (pattern === "dotted") {
+    return h(
+      "svg",
+      { class: "ink-pattern-icon", viewBox: "0 0 48 12", "aria-hidden": "true", focusable: "false" },
+      h("circle", { cx: 6, cy: 6, r: 1.8, fill: "currentColor", stroke: "none" }),
+      h("circle", { cx: 18, cy: 6, r: 1.8, fill: "currentColor", stroke: "none" }),
+      h("circle", { cx: 30, cy: 6, r: 1.8, fill: "currentColor", stroke: "none" }),
+      h("circle", { cx: 42, cy: 6, r: 1.8, fill: "currentColor", stroke: "none" })
+    );
+  }
+  return h(
+    "svg",
+    { class: "ink-pattern-icon", viewBox: "0 0 48 12", "aria-hidden": "true", focusable: "false" },
+    h("line", {
+      ...common,
+      x1: 2,
+      y1: 6,
+      x2: 46,
+      y2: 6,
+      strokeLinecap: "butt",
+    })
+  );
+}
+
 function Toolbar() {
   const paletteEditInputId = "palette-edit-picker";
   const isMobileLayout = shouldHideToolPaletteByDefault();
@@ -481,6 +521,11 @@ function Toolbar() {
     { label: "3px", value: 3 },
     { label: "5px", value: 5 },
     { label: "10px", value: 10 },
+  ];
+  const inkPatternPresets = [
+    { label: "Dotted", value: "dotted" },
+    { label: "Dashed", value: "dashed" },
+    { label: "Solid", value: "solid" },
   ];
   const fillAlphaPresets = [
     { label: "10%", value: 0.1 },
@@ -683,6 +728,11 @@ function Toolbar() {
     scheduleRender();
   };
 
+  const setInkPatternValue = (value) => {
+    inkPattern.value = value;
+    scheduleRender();
+  };
+
   const setFillAlphaValue = (value) => {
     fillAlpha.value = Number(value);
   };
@@ -852,6 +902,30 @@ function Toolbar() {
           }),
           h("span", { class: "thickness-value" }, `${inkThickness.value.toFixed(1)}px`)
         );
+
+  const renderInkPatternControl = () =>
+    h(
+      "div",
+      { class: "ink-pattern-control" },
+      h("span", { class: "ink-pattern-label" }, "Pattern"),
+      h(
+        "div",
+        { class: "ink-pattern-row" },
+        inkPatternPresets.map((option) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `menu-choice-btn ink-pattern-btn ${inkPattern.value === option.value ? "active" : ""}`,
+              onClick: () => setInkPatternValue(option.value),
+              "aria-label": option.label,
+              title: option.label,
+            },
+            h(InkPatternIcon, { pattern: option.value })
+          )
+        )
+      )
+    );
 
   const renderFillAlphaControl = ({ discrete = false } = {}) =>
     discrete
@@ -1138,6 +1212,11 @@ function Toolbar() {
             "div",
             withMenuHelp("settings", "Adjust the stroke thickness used by the Ink tool."),
             renderInkThicknessControl({ discrete: isMobileLayout })
+          ),
+          h(
+            "div",
+            withMenuHelp("settings", "Choose the line style used by the Ink tool."),
+            renderInkPatternControl()
           ),
           h("div", { class: "menu-divider" }),
           h(
@@ -3421,16 +3500,27 @@ function buildExportSvgString() {
   state.ink.forEach((seg) => {
     const prim = state.primitives.find((p) => p.id === seg.primId);
     if (!prim) return;
+    const pattern = getInkSegmentPattern(seg);
     const stroke = getInkSegmentColor(seg);
     const strokeWidth = formatSvgNumber(seg.thickness ?? 2);
+    const dashArray = getInkDashArray(seg, 1).map((value) => formatSvgNumber(value)).join(" ");
+    const strokeAttrs =
+      pattern === "solid"
+        ? `stroke="${stroke}" stroke-width="${strokeWidth}"`
+        : `stroke="${stroke}" stroke-width="${strokeWidth}" stroke-dasharray="${dashArray}" stroke-linecap="${pattern === "dotted" ? "round" : "butt"}"`;
     if (seg.kind === "line") {
       const a = resolveLineEndpoint(seg.a, prim, bounds);
       const b = resolveLineEndpoint(seg.b, prim, bounds);
       if (!a || !b) return;
       const pa = toSvgPoint(a, offsetX, offsetY);
       const pb = toSvgPoint(b, offsetX, offsetY);
+      if (pattern !== "solid") {
+        parts.push(
+          `    <path d="M ${formatSvgNumber(pa.x)} ${formatSvgNumber(pa.y)} L ${formatSvgNumber(pb.x)} ${formatSvgNumber(pb.y)}" stroke="#ffffff" stroke-width="${strokeWidth}" />`
+        );
+      }
       parts.push(
-        `    <path d="M ${formatSvgNumber(pa.x)} ${formatSvgNumber(pa.y)} L ${formatSvgNumber(pb.x)} ${formatSvgNumber(pb.y)}" stroke="${stroke}" stroke-width="${strokeWidth}" />`
+        `    <path d="M ${formatSvgNumber(pa.x)} ${formatSvgNumber(pa.y)} L ${formatSvgNumber(pb.x)} ${formatSvgNumber(pb.y)}" ${strokeAttrs} />`
       );
       return;
     }
@@ -3440,13 +3530,21 @@ function buildExportSvgString() {
     if (seg.full) {
       if (prim.type === "circle") {
         const center = toSvgPoint(prim.c, offsetX, offsetY);
+        if (pattern !== "solid") {
+          parts.push(
+            `    <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" stroke="#ffffff" stroke-width="${strokeWidth}" />`
+          );
+        }
         parts.push(
-          `    <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" stroke="${stroke}" stroke-width="${strokeWidth}" />`
+          `    <circle cx="${formatSvgNumber(center.x)}" cy="${formatSvgNumber(center.y)}" r="${formatSvgNumber(radius)}" ${strokeAttrs} />`
         );
       } else if (isArcPrimitive(prim)) {
         const path = buildSvgArcPath(prim.c, radius, prim.startAngle, prim.endAngle, false, offsetX, offsetY);
         if (!path) return;
-        parts.push(`    <path d="${path}" stroke="${stroke}" stroke-width="${strokeWidth}" />`);
+        if (pattern !== "solid") {
+          parts.push(`    <path d="${path}" stroke="#ffffff" stroke-width="${strokeWidth}" />`);
+        }
+        parts.push(`    <path d="${path}" ${strokeAttrs} />`);
       }
       return;
     }
@@ -3455,7 +3553,10 @@ function buildExportSvgString() {
     if (!angles) return;
     const path = buildSvgArcPath(prim.c, radius, angles.aAngle, angles.bAngle, seg.ccw, offsetX, offsetY);
     if (!path) return;
-    parts.push(`    <path d="${path}" stroke="${stroke}" stroke-width="${strokeWidth}" />`);
+    if (pattern !== "solid") {
+      parts.push(`    <path d="${path}" stroke="#ffffff" stroke-width="${strokeWidth}" />`);
+    }
+    parts.push(`    <path d="${path}" ${strokeAttrs} />`);
   });
   parts.push("  </g>");
 
@@ -3594,38 +3695,59 @@ function buildExportPngCanvas() {
 
   ectx.save();
   ectx.setLineDash([]);
+  const strokeExportPath = (seg, drawPath) => {
+    const pattern = getInkSegmentPattern(seg);
+    const color = getInkSegmentColor(seg);
+    const lineWidth = seg.thickness ?? 2;
+    const dash = getInkDashArray(seg, 1);
+
+    const strokePass = (strokeStyle, dashArray, lineCap) => {
+      ectx.strokeStyle = strokeStyle;
+      ectx.lineWidth = lineWidth;
+      ectx.setLineDash(dashArray);
+      ectx.lineCap = lineCap;
+      ectx.beginPath();
+      drawPath();
+      ectx.stroke();
+    };
+
+    if (pattern === "solid") {
+      strokePass(color, [], "butt");
+      return;
+    }
+    strokePass("#ffffff", [], "butt");
+    strokePass(color, dash, pattern === "dotted" ? "round" : "butt");
+  };
+
   state.ink.forEach((seg) => {
     const prim = state.primitives.find((p) => p.id === seg.primId);
     if (!prim) return;
-    ectx.strokeStyle = getInkSegmentColor(seg);
-    ectx.lineWidth = seg.thickness ?? 2;
     if (seg.kind === "line") {
       const a = resolveLineEndpoint(seg.a, prim, bounds);
       const b = resolveLineEndpoint(seg.b, prim, bounds);
       if (!a || !b) return;
-      ectx.beginPath();
-      ectx.moveTo(a.x, a.y);
-      ectx.lineTo(b.x, b.y);
-      ectx.stroke();
+      strokeExportPath(seg, () => {
+        ectx.moveTo(a.x, a.y);
+        ectx.lineTo(b.x, b.y);
+      });
     }
     if (seg.kind === "circle") {
       const radius = dist(prim.c, prim.rp);
       if (seg.full) {
-        ectx.beginPath();
-        if (prim.type === "circle") {
-          ectx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
-        } else if (isArcPrimitive(prim)) {
-          ectx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
-        } else {
-          return;
-        }
-        ectx.stroke();
+        strokeExportPath(seg, () => {
+          if (prim.type === "circle") {
+            ectx.arc(prim.c.x, prim.c.y, radius, 0, Math.PI * 2);
+          } else if (isArcPrimitive(prim)) {
+            ectx.arc(prim.c.x, prim.c.y, radius, prim.startAngle, prim.endAngle, false);
+          }
+        });
+        if (prim.type !== "circle" && !isArcPrimitive(prim)) return;
       } else {
         const angles = resolveCircularSegmentAngles(seg, prim);
         if (!angles) return;
-        ectx.beginPath();
-        ectx.arc(prim.c.x, prim.c.y, radius, angles.aAngle, angles.bAngle, seg.ccw);
-        ectx.stroke();
+        strokeExportPath(seg, () => {
+          ectx.arc(prim.c.x, prim.c.y, radius, angles.aAngle, angles.bAngle, seg.ccw);
+        });
       }
     }
   });
@@ -3717,6 +3839,24 @@ function setStrokeWidth(px) {
 
 function getInkSegmentColor(seg) {
   return typeof seg?.color === "string" && seg.color ? seg.color : "#0b0b0f";
+}
+
+function getInkSegmentPattern(seg) {
+  const pattern = seg?.pattern;
+  if (pattern === "dashed" || pattern === "dotted") return pattern;
+  return "solid";
+}
+
+function getInkDashArray(seg, unit = 1) {
+  const pattern = getInkSegmentPattern(seg);
+  const thickness = Math.max(1, seg?.thickness ?? 2);
+  if (pattern === "dashed") {
+    return [thickness * 4 * unit, thickness * 3 * unit];
+  }
+  if (pattern === "dotted") {
+    return [Math.max(0.001, thickness * 0.01 * unit), thickness * 2.2 * unit];
+  }
+  return [];
 }
 
 function drawLine(line, strokeStyle, lineWidthPx, dashed = false) {
@@ -3860,9 +4000,32 @@ function drawInkSegment(seg) {
   const prim = state.primitives.find((p) => p.id === seg.primId);
   if (!prim) return;
   ctx.save();
-  ctx.strokeStyle = getInkSegmentColor(seg);
-  setStrokeWidth(seg.thickness ?? 2);
-  ctx.setLineDash([]);
+  const pattern = getInkSegmentPattern(seg);
+  const thickness = seg.thickness ?? 2;
+  const stroke = getInkSegmentColor(seg);
+  const dash = getInkDashArray(seg, 1 / view.scale);
+
+  const strokeCurrentPath = () => {
+    if (pattern === "solid") {
+      ctx.strokeStyle = stroke;
+      setStrokeWidth(thickness);
+      ctx.setLineDash([]);
+      ctx.lineCap = "butt";
+      ctx.stroke();
+      return;
+    }
+    ctx.strokeStyle = "#ffffff";
+    setStrokeWidth(thickness);
+    ctx.setLineDash([]);
+    ctx.lineCap = "butt";
+    ctx.stroke();
+
+    ctx.strokeStyle = stroke;
+    setStrokeWidth(thickness);
+    ctx.setLineDash(dash);
+    ctx.lineCap = pattern === "dotted" ? "round" : "butt";
+    ctx.stroke();
+  };
 
   if (seg.kind === "line") {
     const bounds = getWorldBounds();
@@ -3875,7 +4038,7 @@ function drawInkSegment(seg) {
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    strokeCurrentPath();
   }
 
   if (seg.kind === "circle") {
@@ -3890,7 +4053,7 @@ function drawInkSegment(seg) {
         ctx.restore();
         return;
       }
-      ctx.stroke();
+      strokeCurrentPath();
     } else {
       const angles = resolveCircularSegmentAngles(seg, prim);
       if (!angles) {
@@ -3899,7 +4062,7 @@ function drawInkSegment(seg) {
       }
       ctx.beginPath();
       ctx.arc(prim.c.x, prim.c.y, radius, angles.aAngle, angles.bAngle, seg.ccw);
-      ctx.stroke();
+      strokeCurrentPath();
     }
   }
 
@@ -4801,6 +4964,7 @@ function addInkSegment(seg) {
       ...existing,
       thickness: seg.thickness ?? existing.thickness ?? 2,
       color: typeof seg.color === "string" ? seg.color : typeof existing.color === "string" ? existing.color : "#0b0b0f",
+      pattern: typeof seg.pattern === "string" ? getInkSegmentPattern(seg) : getInkSegmentPattern(existing),
     };
     state.ink = [...state.ink.slice(0, index), updated, ...state.ink.slice(index + 1)];
     scheduleRender();
@@ -4809,6 +4973,7 @@ function addInkSegment(seg) {
   const nextSeg = {
     ...seg,
     color: typeof seg.color === "string" ? seg.color : "#0b0b0f",
+    pattern: getInkSegmentPattern(seg),
   };
   state.ink = [...state.ink, nextSeg];
   scheduleRender();
@@ -4966,6 +5131,7 @@ function inkLineSegment(line, worldPoint) {
     b,
     thickness: inkThickness.value,
     color: fillColor.value,
+    pattern: inkPattern.value,
   };
   addInkSegment(seg);
 }
@@ -4981,6 +5147,7 @@ function inkCircleSegment(circle, worldPoint) {
       full: true,
       thickness: inkThickness.value,
       color: fillColor.value,
+      pattern: inkPattern.value,
     };
     addInkSegment(seg);
     return;
@@ -5003,6 +5170,7 @@ function inkCircleSegment(circle, worldPoint) {
     ccw: false,
     thickness: inkThickness.value,
     color: fillColor.value,
+    pattern: inkPattern.value,
   };
   addInkSegment(seg);
 }
@@ -5041,6 +5209,7 @@ function inkArcSegment(arc, worldPoint) {
     ccw: false,
     thickness: inkThickness.value,
     color: fillColor.value,
+    pattern: inkPattern.value,
   };
   addInkSegment(seg);
 }
