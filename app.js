@@ -141,6 +141,7 @@ const PALETTE_GUTTER = 8;
 const TOUCH_TAP_SLOP_PX = 10;
 
 const toolDefs = [
+  { id: "point", label: "Point", key: "0", Icon: PointToolIcon },
   { id: "straightedge", label: "Straightedge", key: "1", Icon: Ruler },
   { id: "segment", label: "Line Segment", key: "2", Icon: Minus },
   { id: "compass", label: "Circle", key: "3", Icon: Circle },
@@ -153,10 +154,11 @@ const toolDefs = [
   { id: "erase", label: "Delete", key: "D", Icon: Eraser },
 ];
 
-const mobileFooterToolIds = ["straightedge", "segment", "compass", "arc", "ink", "fill"];
+const mobileFooterToolIds = ["point", "straightedge", "segment", "compass", "arc", "ink", "fill"];
 const toolDefsById = new Map(toolDefs.map((def) => [def.id, def]));
 
 const TOOL_MENU_HELP = {
+  point: "Places a point at the clicked location.",
   straightedge: "Draws an infinite line through two selected points.",
   segment: "Draws a finite line segment between two selected points.",
   compass: "Draws a circle from a selected center and radius point.",
@@ -177,6 +179,20 @@ function ToolIcon({ Icon, size = 18, className = "tool-icon" }) {
     "aria-hidden": "true",
     focusable: "false",
   });
+}
+
+function PointToolIcon({ size = 18, className = "tool-icon", ...rest }) {
+  return h(
+    "svg",
+    {
+      ...rest,
+      class: className,
+      viewBox: "0 0 24 24",
+      width: size,
+      height: size,
+    },
+    h("circle", { cx: 12, cy: 12, r: 3.5, fill: "currentColor", stroke: "none" })
+  );
 }
 
 function bumpToolHelpTick() {
@@ -590,6 +606,9 @@ function Toolbar() {
 
   const getToolHelpText = () => {
     toolHelpTick.value;
+    if (tool.value === "point") {
+      return "Click to place a point.";
+    }
     if (tool.value === "straightedge") {
       return toolState.anchor
         ? "Click to select another point on the line."
@@ -1471,12 +1490,12 @@ function Toolbar() {
             h(
               "p",
               { class: "info-text" },
-              "Use Tool menu or keys 1-9 and D to switch tools. Click to place points and snap to intersections."
+              "Use Tool menu or keys 0-9 and D to switch tools. Click to place points and snap to intersections."
             ),
             h(
               "p",
               { class: "info-text" },
-              "Space or middle-drag pans. Wheel zooms. Z/Y undo-redo. X clears. +/- zoom. 0 resets zoom."
+              "Space or middle-drag pans. Wheel zooms. Z/Y undo-redo. X clears. +/- zoom. Numpad 0 resets zoom."
             ),
             h(
               "div",
@@ -2550,6 +2569,9 @@ function expandBoundsArc(bounds, center, radius, startAngle, endAngle, ccw = fal
 function computePrimitiveBounds() {
   let bounds = null;
   state.primitives.forEach((prim) => {
+    if (prim.type === "point") {
+      bounds = expandBounds(bounds, prim.p);
+    }
     if (prim.type === "segment") {
       bounds = expandBounds(bounds, prim.p0);
       bounds = expandBounds(bounds, prim.p1);
@@ -2641,6 +2663,9 @@ function computeExportBounds(includeGuides) {
 
   if (includeGuides) {
     state.primitives.forEach((prim) => {
+      if (prim.type === "point") {
+        bounds = expandBounds(bounds, prim.p);
+      }
       if (prim.type === "segment") {
         bounds = expandBounds(bounds, prim.p0);
         bounds = expandBounds(bounds, prim.p1);
@@ -3244,6 +3269,10 @@ function collectGuideExportPoints() {
   };
 
   state.primitives.forEach((prim) => {
+    if (prim.type === "point") {
+      addPoint(prim.p);
+      return;
+    }
     if (prim.type === "line" || prim.type === "segment") {
       addPoint(prim.p0);
       addPoint(prim.p1);
@@ -3456,6 +3485,11 @@ function buildExportPngCanvas() {
     ectx.fillStyle = "#8fbef8";
     const pointRadius = 2.5;
     state.primitives.forEach((prim) => {
+      if (prim.type === "point") {
+        ectx.beginPath();
+        ectx.arc(prim.p.x, prim.p.y, pointRadius, 0, Math.PI * 2);
+        ectx.fill();
+      }
       if (prim.type === "line") {
         const clip = clipLineToBounds(prim, bounds);
         if (!clip) return;
@@ -3883,6 +3917,12 @@ function drawPreview() {
   const snapped = hoverSnap?.center || hoverSnap?.point || pointerWorld;
   const isMobileLayout = shouldHideToolPaletteByDefault();
 
+  if (tool.value === "point") {
+    ctx.beginPath();
+    ctx.arc(snapped.x, snapped.y, pointRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   if (tool.value === "compass" && pending.center) {
     drawCircle({ c: pending.center, rp: snapped }, "#2b6bf3", 1.5, true);
     ctx.beginPath();
@@ -4228,6 +4268,14 @@ function draw() {
 
   if (showGuides.value) {
     state.primitives.forEach((prim) => {
+      if (prim.type === "point") {
+        ctx.save();
+        ctx.fillStyle = "#8fbef8";
+        ctx.beginPath();
+        ctx.arc(prim.p.x, prim.p.y, 2.5 / view.scale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
       if (prim.type === "line") {
         drawLine(prim, "#8fbef8", 1.2);
       }
@@ -4411,6 +4459,17 @@ function getSnapPoint(worldPoint) {
   if (best) return best;
 
   for (const prim of state.primitives) {
+    if (prim.type !== "point") continue;
+    const d = dist(prim.p, worldPoint);
+    if (d <= snapRadius) {
+      if (!best || d < best.distance) {
+        best = { point: prim.p, distance: d, type: "point", primId: prim.id };
+      }
+    }
+  }
+  if (best) return best;
+
+  for (const prim of state.primitives) {
     if (prim.type !== "circle" && prim.type !== "arc") continue;
     const d = dist(prim.c, worldPoint);
     if (d <= snapRadius) {
@@ -4496,6 +4555,12 @@ function hitTestPrimitive(worldPoint) {
   const hitRadius = HIT_PX / view.scale;
   let best = null;
   for (const prim of state.primitives) {
+    if (prim.type === "point") {
+      const d = dist(prim.p, worldPoint);
+      if (d <= hitRadius) {
+        if (!best || d < best.distance) best = { prim, distance: d };
+      }
+    }
     if (prim.type === "line") {
       const cp = closestPointOnLine(prim, worldPoint);
       const d = dist(cp, worldPoint);
@@ -4554,6 +4619,9 @@ function isNearSpecialPoint(worldPoint) {
     if (dist(inter.point, worldPoint) <= radius) return true;
   }
   for (const prim of state.primitives) {
+    if (prim.type === "point") {
+      if (dist(prim.p, worldPoint) <= radius) return true;
+    }
     if (prim.type === "circle") {
       if (dist(prim.c, worldPoint) <= radius) return true;
     }
@@ -5258,6 +5326,7 @@ function getActionTarget(toolId, worldPoint) {
 
 function isTouchDragConstructionTool(toolId) {
   return (
+    toolId === "point" ||
     toolId === "straightedge" ||
     toolId === "segment" ||
     toolId === "compass" ||
@@ -5293,7 +5362,14 @@ function beginTouchDrawGesture(pointerId) {
 
   const { snap, target } = getActionTarget(toolId, pointerWorld);
 
-  if (toolId === "straightedge" || toolId === "segment") {
+  if (toolId === "point") {
+    touchDrawGesture = {
+      id: pointerId,
+      kind: "point",
+      toolId,
+    };
+    toolState = { step: 0 };
+  } else if (toolId === "straightedge" || toolId === "segment") {
     touchDrawGesture = {
       id: pointerId,
       kind: toolId,
@@ -5383,6 +5459,19 @@ function finalizeTouchDrawGesture(pointerId, worldPoint, canceled = false) {
 
   const { target } = getActionTarget(gesture.toolId, worldPoint);
   hoverSnap = null;
+
+  if (gesture.kind === "point") {
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "point",
+      p: target,
+    });
+    toolState = { step: 0 };
+    bumpToolHelpTick();
+    scheduleRender();
+    return true;
+  }
 
   if (gesture.kind === "straightedge") {
     if (dist(gesture.start, target) < 1) {
@@ -5649,6 +5738,16 @@ function handlePrimaryPointerAction() {
 
   const { target } = getActionTarget(tool.value, pointerWorld);
 
+  if (tool.value === "point") {
+    commitHistory();
+    addPrimitive({
+      id: state.nextPrimId++,
+      type: "point",
+      p: target,
+    });
+    toolState = { step: 0 };
+  }
+
   if (tool.value === "compass") {
     if (!toolState.center) {
       toolState.center = target;
@@ -5890,7 +5989,7 @@ function handlePointerMove(event) {
     return;
   }
 
-  if (["compass", "straightedge", "segment", "arc", "stamp", "copy", "paste"].includes(tool.value)) {
+  if (["point", "compass", "straightedge", "segment", "arc", "stamp", "copy", "paste"].includes(tool.value)) {
     hoverSnap = getActionSnap(tool.value, pointerWorld);
   } else {
     hoverSnap = null;
@@ -6049,6 +6148,11 @@ function handleKeyDown(event) {
     scheduleRender();
     return;
   }
+  if (event.code === "Numpad0") {
+    resetZoom();
+    event.preventDefault();
+    return;
+  }
   const toolKey = toolDefs.find((def) => def.key.toLowerCase() === key);
   if (toolKey) {
     setTool(toolKey.id);
@@ -6062,10 +6166,6 @@ function handleKeyDown(event) {
   }
   if (key === "x") {
     clearAll();
-  }
-  if ((key === "0" && !event.shiftKey) || event.code === "Numpad0") {
-    resetZoom();
-    event.preventDefault();
   }
   if (key === "+" || key === "=" || event.code === "NumpadAdd") {
     zoomBy(1.1);
